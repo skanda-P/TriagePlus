@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TriagePlus – Chat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <div class="brand">
+        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        <span class="brand-name">TriagePlus</span>
+        <span class="brand-sub">Chat</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="chat">
+      <div id="messages" style="flex:1; overflow-y:auto; margin-bottom:1rem;">
+        <!-- Messages will be appended here -->
+      </div>
+      <form id="msg-form" style="display:flex; gap:0.5rem;">
+        <input id="msg-input" type="text" placeholder="Type a message..." required style="flex:1; padding:0.6rem; border-radius:var(--radius); border:1px solid var(--border); background:var(--surface); color:var(--text); font-family:var(--font);" />
+        <button type="submit" style="padding:0.6rem 1rem; background:var(--accent); color:#fff; border:none; border-radius:var(--radius); cursor:pointer; font-family:var(--font);">Send</button>
+      </form>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>TriagePlus Chat &middot; Powered by Gemini AI</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

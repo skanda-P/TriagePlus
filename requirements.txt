@@ -1,0 +1,25 @@
+# TriagePlus Triage Plus – Python dependencies
+# Install with: pip install -r requirements.txt
+
+# Web Backend
+fastapi>=0.100.0
+uvicorn>=0.23.0
+websockets>=11.0.3
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+
+# Gemini AI SDK (legacy package)
+google-generativeai>=0.8.0
+
+# Sentence embeddings for FAISS indexes
+sentence-transformers>=3.0.0
+
+# FAISS vector index (CPU build)
+faiss-cpu>=1.7.0
+
+# HuggingFace datasets for MedDialog & MedQuAD
+datasets>=2.0.0
+
+# Data handling
+numpy>=1.24.0
+pandas>=1.5.0
