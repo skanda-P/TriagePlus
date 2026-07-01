@@ -1,4 +1,4 @@
-# TriagePlus Triage Plus
+# TriagePlus
 
 TriagePlus is an AI-powered medical triage assistant. It provides fast intake, accurate specialty guidance, and instant appointment booking, removing the wait time for patients seeking medical help.
 
