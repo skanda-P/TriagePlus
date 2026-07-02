@@ -264,7 +264,9 @@ async def patient_ws(websocket: WebSocket, session_id: str):
     except WebSocketDisconnect:
         pass
     finally:
-        ping_task.cancel()from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+        ping_task.cancel()
+        
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 import uuid, asyncio, json
 import sys, os
