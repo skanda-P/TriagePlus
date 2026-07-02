@@ -10,11 +10,7 @@ export default function Chat() {
   const sessionId = useSession();
   const clearMessages = useChatStore((s) => s.clearMessages);
 
-  useEffect(() => {
-    if (!sessionStorage.getItem('userName')) navigate('/');
-  }, [navigate]);
-
-  const userName = sessionStorage.getItem('userName') ?? 'Patient';
+  const userName = sessionStorage.getItem('userName') || 'Patient';
 
   const handleNewSession = () => {
     clearMessages();
