@@ -145,6 +145,7 @@ JSON format:
                 generation_config=genai.types.GenerationConfig(
                     temperature=0.5,
                     max_output_tokens=512,
+                    response_mime_type="application/json",
                 ),
             )
             t_llm = (time.time() - t0_llm) * 1000
@@ -158,7 +159,7 @@ JSON format:
                     raw = raw[4:]
                 raw = raw.strip()
             
-            data = json.loads(raw)
+            data = json.loads(raw, strict=False)
             data["top_k_a"] = top_a
             data["prompt"] = prompt
             data["raw_response"] = raw
@@ -212,6 +213,7 @@ JSON format:
                 generation_config=genai.types.GenerationConfig(
                     temperature=0.0,
                     max_output_tokens=512,
+                    response_mime_type="application/json",
                 ),
             )
             t_llm = (time.time() - t0_llm) * 1000
@@ -223,7 +225,7 @@ JSON format:
                     raw = raw[4:]
                 raw = raw.strip()
             
-            data = json.loads(raw)
+            data = json.loads(raw, strict=False)
             dept = data.get("department", "General Medicine")
             conf = float(data.get("confidence", 0.0))
             urgency = int(data.get("urgency_score", 1))
