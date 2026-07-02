@@ -1,6 +1,6 @@
-# local_inference.py (formerly gemini_inference.py)
+# gemini_inference.py
 """
-Local LLM interactive and final inference module for TriagePlus using Ollama.
+Gemini 2.5-flash interactive and final inference module for TriagePlus.
 Loads SentenceTransformer and FAISS globally to eliminate latency.
 """
 
@@ -10,12 +10,11 @@ import logging
 from pathlib import Path
 import numpy as np
 import time
-import ollama  # Replaced google.generativeai with ollama
 
 # Set KMP flag before any heavy imports to prevent OpenMP deadlocks on Windows
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-logger = logging.getLogger("local_inference")
+logger = logging.getLogger("gemini_inference")
 
 DEPARTMENTS = [
     "Cardiology", "Dermatology", "Emergency Medicine", "Endocrinology",
@@ -29,8 +28,20 @@ _index_a = None
 _index_b = None
 _meta_a = None
 _meta_b = None
+_client = None
 
-# Removed _get_gemini_client() entirely as Ollama runs as a background service
+def _get_gemini_client():
+    global _client
+    if _client is None:
+        import google.generativeai as genai
+        from dotenv import load_dotenv
+        if not os.environ.get("GEMINI_API_KEY"):
+            env_path = Path(__file__).parent.parent.parent / "backend" / ".env"
+            load_dotenv(env_path)
+            
+        genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+        _client = genai.GenerativeModel(model_name="gemini-2.5-flash")
+    return _client
 
 def _get_rag_components():
     global _embedder, _index_a, _index_b, _meta_a, _meta_b
@@ -88,15 +99,17 @@ def _search_faiss(query: str, index, meta, top_k=3):
 
 def infer_department_interactive(chat_history: list, session_id: str = "default"):
     """
-    Called on every chat message in CONVERSATION state.
+    Called on every chat message in GEMINI_CONVERSATION state.
     Uses Index A (conversations) to guide follow-up questions.
     """
     logger.info(f"Running interactive inference for session {session_id}...")
     embedder, index_a, _, meta_a, _ = _get_rag_components()
     
+    # Use the last few messages for FAISS search to get contextual few-shot examples
     last_msgs = " ".join([m["content"] for m in chat_history[-3:]])
     top_a, cases_text, _, t_embed, t_faiss = _search_faiss(last_msgs, index_a, meta_a, top_k=3)
     
+    # Format chat history
     formatted_history = ""
     for msg in chat_history:
         role = "Doctor" if msg["role"] == "assistant" else "Patient"
@@ -116,36 +129,31 @@ You must output ONLY a valid JSON object with the following fields:
 - "action": either "ask" (if you need more information to confidently triage) or "complete" (if you have gathered sufficient symptoms to make a triage decision).
 - "reply": your response to the patient (only if action is "ask").
 - "summary": a detailed summary of all the patient's symptoms (only if action is "complete").
-Output strict JSON only. Do not use raw newlines or line breaks inside JSON strings; always use the \n escape sequence.
 
 Do not ask too many questions. Once you know the primary issue and basic severity, choose "complete".
 CRITICAL INSTRUCTION: DO NOT repeat the exact same questions. Acknowledge what the patient said, and ask a specific, new follow-up question based on their last message. If they are unable or unwilling to provide more details, choose "complete".
-CRITICAL: Review the chat history before responding. DO NOT ask a question that has already been asked or answered.
+Output strict JSON only. Do not use raw newlines or line breaks inside JSON strings; always use the \n escape sequence.
+
+JSON format:
 """
-    
+    client = _get_gemini_client()
+    import google.generativeai as genai
     for attempt in range(1, 4):
         try:
             t0_llm = time.time()
-            
-            # Swapped Gemini call for Ollama call
-            response = ollama.chat(
-                model='llama3.2',
-                messages=[{'role': 'user', 'content': prompt}],
-                format='json', # Forces strict JSON output
-                options={
-                    'temperature': 0.5,
-                    'num_predict': 512 # Equivalent to max_output_tokens
-                }
+            response = client.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.5,
+                    max_output_tokens=512,
+                    response_mime_type="application/json",
+                ),
             )
-            
             t_llm = (time.time() - t0_llm) * 1000
             
-            raw = (response['message']['content'] or "").strip()
+            raw = (response.text or "").strip()
             print("=== PROMPT ===", prompt)
             print("=== RAW RESPONSE ===", raw)
-            
-            # Ollama with format='json' rarely adds markdown block formatting, 
-            # but keeping your cleaning logic ensures it never breaks.
             if raw.startswith("```"):
                 raw = raw.split("```")[1]
                 if raw.startswith("json"):
@@ -166,11 +174,11 @@ CRITICAL: Review the chat history before responding. DO NOT ask a question that 
         except Exception as e:
             logger.error(f"Interactive inference attempt {attempt} failed: {e}")
             
-    raise Exception("Local LLM failed after 3 attempts.")
+    raise Exception("Gemini API failed after 3 attempts.")
 
 def infer_department_final(summary: str, session_id: str = "default"):
     """
-    Called when LLM decides the conversation is "complete".
+    Called when Gemini decides the conversation is "complete".
     Uses Index B (knowledge base) to make final department and urgency prediction.
     """
     logger.info(f"Running final triage inference for session {session_id}...")
@@ -189,31 +197,29 @@ Medical knowledge reference:
 Patient summary: {summary}
 
 You must output ONLY a valid JSON object with these fields:
-- "department": one of {', '.join(DEPARTMENTS)}
-- "confidence": a float between 0.0 and 1.0 representing your certainty.
-- "urgency_score": an integer from 1 to 10.
-- "reasoning": a brief explanation of why you chose this department and urgency.
+- 'department': one of {', '.join(DEPARTMENTS)}
+- 'confidence': a float between 0.0 and 1.0 representing your certainty.
+- 'urgency_score': an integer from 1 to 10.
+- 'reasoning': a brief explanation of why you chose this department and urgency.
+
+JSON format:
 """
-    
+    client = _get_gemini_client()
+    import google.generativeai as genai
     for attempt in range(1, 4):
         try:
             t0_llm = time.time()
-            
-            # Swapped Gemini call for Ollama call
-            response = ollama.chat(
-                model='llama3.1',
-                messages=[{'role': 'user', 'content': prompt}],
-                format='json',
-                options={
-                    'temperature': 0.0, # Kept at 0.0 for strict analytical output
-                    'num_predict': 512
-                }
+            response = client.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.0,
+                    max_output_tokens=512,
+                    response_mime_type="application/json",
+                ),
             )
-            
             t_llm = (time.time() - t0_llm) * 1000
             
-            raw = (response['message']['content'] or "").strip()
-            
+            raw = (response.text or "").strip()
             if raw.startswith("```"):
                 raw = raw.split("```")[1]
                 if raw.startswith("json"):
@@ -225,6 +231,7 @@ You must output ONLY a valid JSON object with these fields:
             conf = float(data.get("confidence", 0.0))
             urgency = int(data.get("urgency_score", 1))
             
+            # Fallback Logic: Low confidence OR very poor RAG match
             if conf < 0.6 or max_score < 0.3:
                 logger.warning(f"Low confidence ({conf}) or poor RAG match ({max_score}). Falling back to General Medicine.")
                 dept = "General Medicine"
