@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, Stethoscope, Clock, Shield, Star } from 'lucide-react';
+import { StethoscopeToggle } from '../components/shared/StethoscopeToggle';
 
 const PASTEL_CARDS = [
   { bg: 'var(--color-mint-wash)',  icon: <Stethoscope className="w-7 h-7" />, title: 'Smart Triage', body: 'Describe your symptoms in plain language. Our AI routes you to the right specialist — fast.' },
@@ -10,14 +11,7 @@ const PASTEL_CARDS = [
 ];
 
 export default function Landing() {
-  const [name, setName] = useState('');
-  const navigate = useNavigate();
-
-  const startChat = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    sessionStorage.setItem('userName', trimmed);
+  const startChat = () => {
     navigate('/chat');
   };
 
@@ -31,6 +25,7 @@ export default function Landing() {
             <span className="font-semibold text-lg text-charcoal dark:text-white transition-colors duration-300">TriagePlus</span>
           </div>
           <div className="flex items-center gap-3">
+            <StethoscopeToggle />
             <a href="/diagnostics" className="text-xs font-mono font-bold text-indigo-bloom bg-indigo-50 px-2 py-1 rounded border border-indigo-200">Dev: RAG Monitor</a>
             <a href="/chat" className="text-sm font-medium" style={{ color: 'var(--color-canopy-green)' }}>Patient Chat</a>
             <a href="/doctor/login" className="btn-nav text-sm">Doctor Portal</a>
@@ -52,16 +47,11 @@ export default function Landing() {
               <p className="text-lg mb-10 text-graphite dark:text-ash transition-colors duration-300" style={{ maxWidth: '460px', lineHeight: '1.6' }}>
                 Describe your symptoms to our AI assistant. Get routed to the right specialist and book a confirmed appointment — all in under 2 minutes.
               </p>
-              <form id="name-form" onSubmit={startChat} className="flex flex-col sm:flex-row gap-3 max-w-md">
-                <input
-                  id="user-name" type="text" value={name} onChange={(e) => setName(e.target.value)}
-                  placeholder="Enter your name to begin…" required
-                  className="flex-1 min-h-12 rounded-full px-5 text-base text-charcoal dark:text-white bg-white dark:bg-slate-700 outline-none focus:ring-2 focus:ring-indigo-bloom/40 dark:focus:ring-sky-signal/40 transition-all placeholder:text-ash"
-                />
-                <button id="start-triage-btn" type="submit" className="btn-coral flex-shrink-0 gap-2">
+              <div className="flex items-center gap-4">
+                <button id="start-triage-btn" onClick={startChat} className="btn-coral flex-shrink-0 gap-2">
                   Start Triage <ArrowRight className="w-4 h-4" />
                 </button>
-              </form>
+              </div>
               <p className="mt-5 text-xs" style={{ color: 'var(--color-ash)' }}>🔒 Your data is private and never shared with third parties.</p>
             </div>
 
@@ -72,9 +62,9 @@ export default function Landing() {
                   <span>9:41</span><span className="font-medium text-white">TriagePlus</span><span>●●●</span>
                 </div>
                 <div className="bg-white dark:bg-slate-900 px-4 pt-4 pb-6 flex flex-col gap-3 transition-colors duration-300">
-                  <div className="bubble-ai text-sm">👋 Welcome to TriagePlus! What's your name?</div>
-                  <div className="bubble-user text-sm">Priya Sharma</div>
-                  <div className="bubble-ai text-sm">Hi Priya! Please describe your symptoms.</div>
+                  <div className="bubble-ai text-sm">👋 Welcome to TriagePlus! What is your gender?</div>
+                  <div className="bubble-user text-sm">Female</div>
+                  <div className="bubble-ai text-sm">Got it. What is your phone number?</div>
                   <div className="bubble-user text-sm">I have chest tightness and shortness of breath since morning.</div>
                   <div className="bubble-ai text-sm">Based on your symptoms, I recommend <strong className="text-indigo-bloom dark:text-sky-signal">Cardiology</strong> (93% confidence). 🟢 Level 3 — Soon.</div>
                 </div>

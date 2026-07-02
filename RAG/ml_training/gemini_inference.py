@@ -100,6 +100,15 @@ def _empty_slots() -> dict:
 def _slots_satisfied(slots: dict) -> bool:
     return all(slots.get(k) for k in REQUIRED_SLOTS)
 
+def _is_valid_slot(value):
+    if not value: 
+        return False
+    if isinstance(value, str):
+        val_lower = value.lower().strip()
+        if val_lower in ["unknown", "not mentioned", "null", "none", "n/a", "no", "not provided"]:
+            return False
+    return True
+
 def _merge_slots(known: dict, model_slots: dict | None) -> dict:
     """Slots only ever get filled in, never erased — a flaky extraction on a
     later turn can't un-ask a question that was already answered earlier."""
@@ -107,7 +116,7 @@ def _merge_slots(known: dict, model_slots: dict | None) -> dict:
     model_slots = model_slots or {}
     for k in REQUIRED_SLOTS:
         v = model_slots.get(k)
-        if v:
+        if _is_valid_slot(v):
             merged[k] = v
     extra = model_slots.get("associated_symptoms") or []
     if isinstance(extra, list):
@@ -195,7 +204,9 @@ LATEST MESSAGE: {latest_msg}
 Extract the symptoms into this JSON format:
 - "slots": {{"chief_complaint": string or null, "onset": string or null, "severity": string or null, "associated_symptoms": [string]}}
 
-Do NOT blank out any values from ALREADY KNOWN. Merge any new details from LATEST MESSAGE.
+RULES:
+1. Do NOT blank out any values from ALREADY KNOWN. Merge any new details from LATEST MESSAGE.
+2. If a slot is NOT explicitly mentioned in the LATEST MESSAGE and NOT in ALREADY KNOWN, set it to exactly null. Do not use strings like "unknown" or "not mentioned".
 Output strict JSON only.
 """
     t_llm = 0

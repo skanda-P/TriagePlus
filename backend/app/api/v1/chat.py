@@ -11,12 +11,20 @@ router = APIRouter()
 # ── Diagnostics Event Bus ──────────────────────────────────────────────────────
 _diagnostic_clients: list[WebSocket] = []
 
+import logging
+logger = logging.getLogger("chat_api")
+
 async def broadcast_diagnostic(data: dict):
+    logger.info(f"Broadcasting diagnostic to {len(_diagnostic_clients)} clients.")
     for client in _diagnostic_clients.copy():
         try:
             await client.send_json(data)
-        except Exception:
-            _diagnostic_clients.remove(client)
+        except Exception as e:
+            logger.error(f"Failed to broadcast diagnostic: {e}")
+            try:
+                _diagnostic_clients.remove(client)
+            except ValueError:
+                pass
 
 @router.websocket("/ws/diagnostics")
 async def diagnostics_ws(websocket: WebSocket):
@@ -59,7 +67,7 @@ async def patient_ws(websocket: WebSocket, session_id: str):
 
     if session_id not in _sessions:
         _sessions[session_id] = {
-            "fsm_state": "GENDER_ENTRY",
+            "fsm_state": "NAME_ENTRY",
             "history": [], # Stores dicts like {"role": "user", "content": "..."}
             "turn_count": 0,
             "slots": None,  # filled in by infer_department_interactive as symptoms are gathered
@@ -70,12 +78,12 @@ async def patient_ws(websocket: WebSocket, session_id: str):
 
     state = _sessions[session_id]
 
-    if state.get("fsm_state") == "GENDER_ENTRY":
+    if state.get("fsm_state") == "NAME_ENTRY":
         try:
             await websocket.send_json({
                 "type": "message",
-                "content": "Welcome to TriagePlus! 👋 I'm your AI triage assistant. What is your gender?",
-                "state": "GENDER_ENTRY",
+                "content": "Welcome to TriagePlus! 👋 I'm your AI triage assistant. What's your full name?",
+                "state": "NAME_ENTRY",
             })
         except Exception:
             return
@@ -99,7 +107,7 @@ async def patient_ws(websocket: WebSocket, session_id: str):
             if not content:
                 continue
 
-            fsm = state.get("fsm_state", "GENDER_ENTRY")
+            fsm = state.get("fsm_state", "NAME_ENTRY")
 
             if await check_emergency_llm(content):
                 await websocket.send_json({
@@ -110,9 +118,25 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                 await websocket.close()
                 return
 
-            if fsm == "GENDER_ENTRY":
+            if fsm == "NAME_ENTRY":
+                if len(content) < 2 or content.isdigit():
+                    await websocket.send_json({"type": "error", "content": "Please enter a valid name."})
+                else:
+                    state["patient_name"] = content
+                    state["fsm_state"] = "AGE_ENTRY"
+                    await websocket.send_json({"type": "message", "content": f"Hi {content}! What is your age?", "state": "AGE_ENTRY"})
+
+            elif fsm == "AGE_ENTRY":
+                if not content.isdigit() or not (0 < int(content) < 120):
+                    await websocket.send_json({"type": "error", "content": "Please enter a valid age between 1 and 120."})
+                else:
+                    state["age"] = int(content)
+                    state["fsm_state"] = "GENDER_ENTRY"
+                    await websocket.send_json({"type": "message", "content": "Got it. What is your gender?", "state": "GENDER_ENTRY"})
+
+            elif fsm == "GENDER_ENTRY":
                 if len(content) < 3 or content.isdigit():
-                    await websocket.send_json({"type": "error", "content": "Please enter a valid gender."})
+                    await websocket.send_json({"type": "error", "content": "Please enter a valid gender (e.g., Male, Female, Other)."})
                 else:
                     state["gender"] = content
                     state["fsm_state"] = "PHONE_ENTRY"
@@ -125,14 +149,6 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                     await websocket.send_json({"type": "error", "content": "Please enter a valid phone number (at least 7 digits)."})
                 else:
                     state["phone"] = cleaned
-                    state["fsm_state"] = "AGE_ENTRY"
-                    await websocket.send_json({"type": "message", "content": "Got it. And what is your age?", "state": "AGE_ENTRY"})
-
-            elif fsm == "AGE_ENTRY":
-                if not content.isdigit() or not (0 < int(content) < 120):
-                    await websocket.send_json({"type": "error", "content": "Please enter a valid age between 1 and 120."})
-                else:
-                    state["age"] = int(content)
                     state["fsm_state"] = "INITIAL_SYMPTOM"
                     await websocket.send_json({"type": "message", "content": "Thank you. What brings you in today? Please describe your symptoms.", "state": "INITIAL_SYMPTOM"})
 
@@ -185,8 +201,7 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                         }
                         asyncio.create_task(broadcast_diagnostic(diag))
                         
-                        await websocket.send_json({"type": "typing", "content": False})
-                        await websocket.send_json({"type": "message", "content": reply, "state": "GEMINI_CONVERSATION"})
+                        await websocket.send_json({"type": "typing", "content": False, "state": "GEMINI_CONVERSATION"})
                         
                     elif action == "complete":
                         summary = gemini_res.get("summary", content)
