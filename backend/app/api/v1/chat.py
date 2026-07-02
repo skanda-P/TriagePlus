@@ -270,7 +270,7 @@ import uuid, asyncio, json
 import sys, os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../RAG")))
-from ml_training.gemini_inference import infer_department_interactive, infer_department_final, DEPARTMENTS
+from ml_training.gemini_inference import infer_department_interactive, infer_department_final, DEPARTMENTS, _get_rag_components
 
 router = APIRouter()
 
@@ -338,6 +338,9 @@ async def patient_ws(websocket: WebSocket, session_id: str):
             "turn_count": 0,
             "slots": None,  # filled in by infer_department_interactive as symptoms are gathered
         }
+        # Pre-load RAG components (embedding model and FAISS) in the background
+        # to hide latency while the user is answering hardcoded questions.
+        asyncio.create_task(asyncio.to_thread(_get_rag_components))
 
     state = _sessions[session_id]
 
