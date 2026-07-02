@@ -11,6 +11,7 @@ export function useWebSocket(sessionId: string) {
   const mountedRef = useRef(true);
 
   const addMessage     = useChatStore((s) => s.addMessage);
+  const appendMessageChunk = useChatStore((s) => s.appendMessageChunk);
   const setFsmState    = useChatStore((s) => s.setFsmState);
   const setSessionMeta = useChatStore((s) => s.setSessionMeta);
   const setIsTyping    = useChatStore((s) => s.setIsTyping);
@@ -52,6 +53,11 @@ export function useWebSocket(sessionId: string) {
           addMessage({ role: 'assistant', content: data.content });
         } else if (data.type === 'typing') {
           setIsTyping(data.content);
+        } else if (data.type === 'stream_start') {
+          setIsTyping(false); // Hide typing indicator when stream starts
+        } else if (data.type === 'stream_chunk') {
+          setIsTyping(false);
+          appendMessageChunk('assistant', data.content);
         }
       } catch { /* non-JSON frame */ }
     };

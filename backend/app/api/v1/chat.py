@@ -4,7 +4,7 @@ import uuid, asyncio, json
 import sys, os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../RAG")))
-from ml_training.gemini_inference import infer_department_interactive, infer_department_final, DEPARTMENTS, _get_rag_components
+from ml_training.gemini_inference import infer_department_interactive, infer_department_final, DEPARTMENTS, _get_rag_components, check_emergency_llm
 
 router = APIRouter()
 
@@ -44,15 +44,7 @@ async def get_doctor_queue():
 # ── In-memory session store ────────────────────────────────────────────────────
 _sessions: dict[str, dict] = {}
 
-_EMERGENCY_PHRASES = [
-    "heart attack", "chest pain", "can't breathe", "cannot breathe",
-    "stroke", "unconscious", "not breathing", "severe bleeding",
-    "overdose", "suicide", "dying", "call 112", "ambulance",
-]
 
-def check_emergency(text: str) -> bool:
-    lower = text.lower()
-    return any(phrase in lower for phrase in _EMERGENCY_PHRASES)
 
 # ── WebSocket endpoint (primary) ───────────────────────────────────────────────
 @router.websocket("/ws/chat/{session_id}")
@@ -67,7 +59,7 @@ async def patient_ws(websocket: WebSocket, session_id: str):
 
     if session_id not in _sessions:
         _sessions[session_id] = {
-            "fsm_state": "NAME_ENTRY",
+            "fsm_state": "GENDER_ENTRY",
             "history": [], # Stores dicts like {"role": "user", "content": "..."}
             "turn_count": 0,
             "slots": None,  # filled in by infer_department_interactive as symptoms are gathered
@@ -78,12 +70,12 @@ async def patient_ws(websocket: WebSocket, session_id: str):
 
     state = _sessions[session_id]
 
-    if state.get("fsm_state") == "NAME_ENTRY":
+    if state.get("fsm_state") == "GENDER_ENTRY":
         try:
             await websocket.send_json({
                 "type": "message",
-                "content": "Welcome to TriagePlus! 👋 I'm your AI triage assistant. What's your full name?",
-                "state": "NAME_ENTRY",
+                "content": "Welcome to TriagePlus! 👋 I'm your AI triage assistant. What is your gender?",
+                "state": "GENDER_ENTRY",
             })
         except Exception:
             return
@@ -107,9 +99,9 @@ async def patient_ws(websocket: WebSocket, session_id: str):
             if not content:
                 continue
 
-            fsm = state.get("fsm_state", "NAME_ENTRY")
+            fsm = state.get("fsm_state", "GENDER_ENTRY")
 
-            if check_emergency(content):
+            if await check_emergency_llm(content):
                 await websocket.send_json({
                     "type": "emergency",
                     "content": "⚠️ This sounds like a medical emergency. Please call 112 immediately or go to your nearest ER.",
@@ -118,13 +110,13 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                 await websocket.close()
                 return
 
-            if fsm == "NAME_ENTRY":
-                if len(content) < 2 or content.isdigit():
-                    await websocket.send_json({"type": "error", "content": "Please enter a valid name."})
+            if fsm == "GENDER_ENTRY":
+                if len(content) < 3 or content.isdigit():
+                    await websocket.send_json({"type": "error", "content": "Please enter a valid gender."})
                 else:
-                    state["patient_name"] = content
+                    state["gender"] = content
                     state["fsm_state"] = "PHONE_ENTRY"
-                    await websocket.send_json({"type": "message", "content": f"Hi {content}! What is your phone number?", "state": "PHONE_ENTRY"})
+                    await websocket.send_json({"type": "message", "content": "Got it. What is your phone number?", "state": "PHONE_ENTRY"})
 
             elif fsm == "PHONE_ENTRY":
                 # Very basic validation: only digits and lengths typical of phone numbers
@@ -152,20 +144,30 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                 await websocket.send_json({"type": "typing", "content": True})
                 
                 try:
-                    # turn_count + slots are what actually guarantee convergence -
-                    # see REQUIRED_SLOTS / MAX_INTERACTIVE_TURNS in gemini_inference.py
-                    gemini_res = await asyncio.to_thread(
-                        infer_department_interactive,
+                    # Async generator handling for interactive step
+                    gemini_res = None
+                    async for payload in infer_department_interactive(
                         state["history"], session_id,
                         turn_count=state["turn_count"],
                         known_slots=state.get("slots"),
-                    )
+                        patient_info={"gender": state.get("gender"), "age": state.get("age")}
+                    ):
+                        if payload["type"] == "stream_start":
+                            await websocket.send_json({"type": "stream_start"})
+                        elif payload["type"] == "stream_chunk":
+                            await websocket.send_json({"type": "stream_chunk", "content": payload["content"]})
+                        elif payload["type"] == "result":
+                            gemini_res = payload["data"]
+
+                    if not gemini_res:
+                        raise Exception("No result from inference generator")
+
                     state["slots"] = gemini_res.get("slots", state.get("slots"))
                     
                     action = gemini_res.get("action", "ask")
                     
                     if action == "ask":
-                        reply = gemini_res.get("reply", "Can you tell me more?")
+                        reply = gemini_res.get("reply", "")
                         state["history"].append({"role": "assistant", "content": reply})
                         state["fsm_state"] = "GEMINI_CONVERSATION"
                         
@@ -190,7 +192,10 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                         summary = gemini_res.get("summary", content)
                         
                         # Run final triage inference
-                        dept, conf, urgency, diag = await asyncio.to_thread(infer_department_final, summary, session_id)
+                        dept, conf, urgency, diag = await asyncio.to_thread(
+                            infer_department_final, summary, session_id,
+                            patient_info={"gender": state.get("gender"), "age": state.get("age")}
+                        )
                         asyncio.create_task(broadcast_diagnostic(diag))
                         
                         state["fsm_state"] = "RECOMMENDING"

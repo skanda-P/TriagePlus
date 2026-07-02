@@ -1,14 +1,14 @@
 import React from 'react';
 import { useThemeStore } from '../../stores/themeStore';
 
-export function StethoscopeToggle() {
+export function StethoscopeToggle({ className = '' }: { className?: string }) {
   const { isDark, toggleTheme } = useThemeStore();
 
   return (
-    <div className="fixed bottom-8 right-8 z-50 flex flex-col items-center select-none drop-shadow-lg transition-transform hover:scale-105 duration-300">
+    <div className={`flex flex-col items-center select-none transition-transform hover:scale-105 duration-300 ${className}`}>
       <svg 
-        width="64" 
-        height="128" 
+        width="32" 
+        height="64" 
         viewBox="0 0 64 128" 
         fill="none" 
         xmlns="http://www.w3.org/2000/svg"

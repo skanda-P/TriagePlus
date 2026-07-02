@@ -1,7 +1,6 @@
 import React, { Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { Spinner } from './components/shared/Spinner';
-import { StethoscopeToggle } from './components/shared/StethoscopeToggle';
 
 import Landing from './pages/Landing';
 import Chat from './pages/Chat';
@@ -20,7 +19,6 @@ function App() {
           </div>
         }
       >
-        <StethoscopeToggle />
         <Routes>
           <Route path="/"                  element={<Landing />} />
           <Route path="/chat"              element={<Chat />} />

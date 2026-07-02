@@ -138,147 +138,174 @@ def _fallback_summary(slots: dict, chat_history: list) -> str:
         return summary
     return " ".join(m["content"] for m in chat_history if m["role"] == "user")
 
-def infer_department_interactive(chat_history: list, session_id: str = "default",
-                                  turn_count: int = 0, known_slots: dict | None = None):
-    """
-    Called on every chat message in CONVERSATION state.
-    Uses Index A (conversations) to guide follow-up questions.
+async def check_emergency_llm(text: str) -> bool:
+    """Uses LLM to detect if the patient message is a medical emergency."""
+    prompt = f"""
+Analyze the following patient message. Is it a life-threatening medical emergency (e.g. heart attack, stroke, severe bleeding, not breathing, unconscious)?
+Ignore negative statements like "I do not have chest pain".
+Reply ONLY with a valid JSON object: {{"is_emergency": true/false}}.
 
-    `turn_count` and `known_slots` are supplied by the caller (persisted on
-    the session) so convergence is a property of this function's control
-    flow, not of the LLM's own judgement:
-      - `known_slots` gives the model explicit, structured memory of what's
-        already been answered instead of making it re-derive that from raw
-        prose every turn.
-      - Once REQUIRED_SLOTS are filled, or turn_count reaches
-        MAX_INTERACTIVE_TURNS, "action" is forced to "complete" no matter
-        what the model itself returned.
-    """
+Patient Message: "{text}"
+"""
+    try:
+        client = ollama.AsyncClient()
+        response = await client.chat(
+            model='llama3.2',
+            messages=[{'role': 'user', 'content': prompt}],
+            format='json',
+            options={'temperature': 0.0, 'num_predict': 128, 'keep_alive': '5m'}
+        )
+        raw = response['message']['content'].strip()
+        data = json.loads(raw, strict=False)
+        return bool(data.get("is_emergency", False))
+    except Exception as e:
+        logger.error(f"Emergency LLM check failed: {e}")
+        return False
+
+async def infer_department_interactive(chat_history: list, session_id: str = "default",
+                                  turn_count: int = 0, known_slots: dict | None = None,
+                                  patient_info: dict | None = None):
     logger.info(f"Running interactive inference for session {session_id} (turn {turn_count})...")
     embedder, index_a, _, meta_a, _ = _get_rag_components()
 
     known_slots = known_slots or _empty_slots()
     missing = [s for s in REQUIRED_SLOTS if not known_slots.get(s)]
     force_complete = turn_count >= MAX_INTERACTIVE_TURNS
-    # The last turn where a NEW question is still allowed - make it count by
-    # pushing toward a closed/multiple-choice question instead of open-ended.
-    last_chance = bool(missing) and turn_count == MAX_INTERACTIVE_TURNS - 1
 
-    last_msgs = " ".join([m["content"] for m in chat_history[-3:]])
-    top_a, cases_text, _, t_embed, t_faiss = _search_faiss(last_msgs, index_a, meta_a, top_k=3)
+    # RAG Amnesia fix
+    chief_complaint = known_slots.get("chief_complaint") or (chat_history[0]["content"] if chat_history else "")
+    latest_msg = chat_history[-1]["content"] if chat_history else ""
+    query = f"Patient symptom: {chief_complaint}. Latest update: {latest_msg}"
+    top_a, cases_text, _, t_embed, t_faiss = _search_faiss(query, index_a, meta_a, top_k=3)
     
     formatted_history = ""
     for msg in chat_history:
         role = "Doctor" if msg["role"] == "assistant" else "Patient"
         formatted_history += f"{role}: {msg['content']}\n"
 
-    final_turn_instruction = (
-        'This is the FINAL allowed turn. You MUST set "action" to "complete" '
-        "and summarize using whatever information is available, even if some "
-        "fields are still unknown."
-        if force_complete else
-        "If the patient is unable or unwilling to give more detail on the same "
-        "topic twice, drop that topic and either move to the next item in "
-        'STILL MISSING or set "action" to "complete".'
-    )
+    # Step 1: Extraction
+    patient_context = f"Age: {patient_info.get('age', 'Unknown')}, Gender: {patient_info.get('gender', 'Unknown')}" if patient_info else "Unknown"
 
-    prompt = f"""
-You are an expert medical triage assistant (Doctor).
-Your goal is to gather the fields below from the Patient, then stop.
+    extraction_prompt = f"""
+You are an expert medical triage assistant extracting symptoms.
+PATIENT CONTEXT: {patient_context}
+ALREADY KNOWN: {json.dumps(known_slots, indent=2)}
+LATEST MESSAGE: {latest_msg}
 
-ALREADY KNOWN (do not ask about these again — they are answered):
-{json.dumps(known_slots, indent=2)}
+Extract the symptoms into this JSON format:
+- "slots": {{"chief_complaint": string or null, "onset": string or null, "severity": string or null, "associated_symptoms": [string]}}
 
-STILL MISSING: {missing if missing else "nothing - all required fields are known"}
+Do NOT blank out any values from ALREADY KNOWN. Merge any new details from LATEST MESSAGE.
+Output strict JSON only.
+"""
+    t_llm = 0
+    try:
+        t0 = time.time()
+        client = ollama.AsyncClient()
+        response = await client.chat(
+            model='llama3.2',
+            messages=[{'role': 'user', 'content': extraction_prompt}],
+            format='json',
+            options={'temperature': 0.1, 'num_predict': 512, 'keep_alive': '5m'}
+        )
+        t_llm += (time.time() - t0) * 1000
+        raw = response['message']['content'].strip()
+        data = json.loads(raw, strict=False)
+        merged_slots = _merge_slots(known_slots, data.get("slots"))
+    except Exception as e:
+        logger.error(f"Extraction failed: {e}")
+        merged_slots = known_slots
 
-Here are examples of how a Doctor typically asks follow-up questions for similar cases:
-{cases_text}
+    # Determine action using Python logic
+    new_missing = [s for s in REQUIRED_SLOTS if not merged_slots.get(s)]
+    if force_complete or not new_missing:
+        action = "complete"
+    else:
+        action = "ask"
+    
+    latencies = {
+        "embed": round(t_embed, 2),
+        "faiss": round(t_faiss, 2),
+        "llm": 0, # Will update
+        "total": 0
+    }
 
-Here is the current conversation:
+    if action == "complete":
+        summary = _fallback_summary(merged_slots, chat_history)
+        latencies["llm"] = round(t_llm, 2)
+        latencies["total"] = round(t_embed + t_faiss + t_llm, 2)
+        yield {
+            "type": "result",
+            "data": {
+                "action": "complete",
+                "summary": summary,
+                "slots": merged_slots,
+                "top_k_a": top_a,
+                "prompt": extraction_prompt,
+                "raw_response": "Extraction only",
+                "latencies": latencies
+            }
+        }
+        return
+
+    # Step 2: Generation (Streaming)
+    instruction = ""
+    if "chief_complaint" in new_missing:
+        instruction = "The patient has not provided a clear chief complaint. Ask them politely to describe what brings them in."
+    elif "onset" in new_missing:
+        instruction = "The patient has not provided the onset of their symptoms. Ask them politely when the symptoms started."
+    elif "severity" in new_missing:
+        instruction = "The patient has not provided severity. Ask them politely to rate their pain or discomfort from 1-10."
+    else:
+        instruction = "Ask them politely for any more details about their symptoms."
+
+    generation_prompt = f"""
+You are an expert medical triage assistant.
+Current conversation:
 {formatted_history}
 
-You must output ONLY a valid JSON object with these fields:
-- "action": either "ask" (if fields are still missing) or "complete" (if all required fields are known).
-- "reply": your response to the patient (only if action is "ask").
-- "summary": a detailed summary of all the patient's symptoms (only if action is "complete").
-- "slots": {{"chief_complaint": string or null, "onset": string or null, "severity": string or null, "associated_symptoms": [string]}}
-  Populate "slots" using the ALREADY KNOWN values above plus anything new the
-  patient just said. Never blank out a value that was already known.
-
-RULES:
-1. Ask about exactly ONE item from STILL MISSING at a time. Never ask about anything already in ALREADY KNOWN.
-2. Treat a question as already asked if it covers the same topic as a prior question, even when reworded — not just exact text matches.
-3. If STILL MISSING is empty, set "action" to "complete".
-4. {final_turn_instruction}
-Output strict JSON only. Do not use raw newlines or line breaks inside JSON strings; always use the \\n escape sequence.
+INSTRUCTION: {instruction}
+Respond directly to the patient as the Doctor in 1-2 short sentences. Do not include any internal thoughts, formatting, or JSON.
 """
-    
-    for attempt in range(1, 4):
-        try:
-            t0_llm = time.time()
-            
-            # Swapped Gemini call for Ollama call
-            response = ollama.chat(
-                model='llama3.2',
-                messages=[{'role': 'user', 'content': prompt}],
-                format='json', # Forces strict JSON output
-                options={
-                    'temperature': 0.2,  # was 0.5 — this is a gating/extraction decision, not creative writing
-                    'num_predict': 512 # Equivalent to max_output_tokens
-                }
-            )
-            
-            t_llm = (time.time() - t0_llm) * 1000
-            
-            raw = (response['message']['content'] or "").strip()
-            
-            # Ollama with format='json' rarely adds markdown block formatting, 
-            # but keeping your cleaning logic ensures it never breaks.
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-                raw = raw.strip()
-            
-            data = json.loads(raw, strict=False)
 
-            # ── Hard backstop: never trust the model's own convergence call blindly ──
-            merged_slots = _merge_slots(known_slots, data.get("slots"))
-            data["slots"] = merged_slots
+    yield {"type": "stream_start"}
+    full_reply = ""
+    t0 = time.time()
+    try:
+        response_stream = await client.chat(
+            model='llama3.2',
+            messages=[{'role': 'user', 'content': generation_prompt}],
+            options={'temperature': 0.3, 'num_predict': 256, 'keep_alive': '5m'},
+            stream=True
+        )
+        async for chunk in response_stream:
+            text = chunk['message']['content']
+            full_reply += text
+            if text:
+                yield {"type": "stream_chunk", "content": text}
+    except Exception as e:
+        logger.error(f"Generation failed: {e}")
+        full_reply = "Can you tell me more about that?"
+        yield {"type": "stream_chunk", "content": full_reply}
+        
+    t_llm += (time.time() - t0) * 1000
+    latencies["llm"] = round(t_llm, 2)
+    latencies["total"] = round(t_embed + t_faiss + t_llm, 2)
 
-            if force_complete or _slots_satisfied(merged_slots):
-                data["action"] = "complete"
-                if not data.get("summary"):
-                    data["summary"] = _fallback_summary(merged_slots, chat_history)
-
-            data["top_k_a"] = top_a
-            data["prompt"] = prompt
-            data["raw_response"] = raw
-            data["latencies"] = {
-                "embed": round(t_embed, 2),
-                "faiss": round(t_faiss, 2),
-                "llm": round(t_llm, 2),
-                "total": round(t_embed + t_faiss + t_llm, 2)
-            }
-            return data
-        except Exception as e:
-            logger.error(f"Interactive inference attempt {attempt} failed: {e}")
-
-    # Even total LLM failure must not loop the patient forever once we're
-    # past the turn cap — fall back to whatever slots/history we already have.
-    if force_complete:
-        return {
-            "action": "complete",
-            "summary": _fallback_summary(known_slots, chat_history),
-            "slots": known_slots,
+    yield {
+        "type": "result",
+        "data": {
+            "action": "ask",
+            "reply": full_reply.strip(),
+            "slots": merged_slots,
             "top_k_a": top_a,
-            "prompt": prompt,
-            "raw_response": "FAILED",
-            "latencies": {"embed": round(t_embed, 2), "faiss": round(t_faiss, 2), "llm": 0, "total": 0},
+            "prompt": generation_prompt,
+            "raw_response": full_reply,
+            "latencies": latencies
         }
-    raise Exception("Local LLM failed after 3 attempts.")
+    }
 
-def infer_department_final(summary: str, session_id: str = "default"):
+def infer_department_final(summary: str, session_id: str = "default", patient_info: dict | None = None):
     """
     Called when LLM decides the conversation is "complete".
     Uses Index B (knowledge base) to make final department and urgency prediction.
@@ -288,6 +315,8 @@ def infer_department_final(summary: str, session_id: str = "default"):
     
     top_b, knowledge_text, max_score, t_embed, t_faiss = _search_faiss(summary, index_b, meta_b, top_k=3)
     
+    patient_context = f"Age: {patient_info.get('age', 'Unknown')}, Gender: {patient_info.get('gender', 'Unknown')}" if patient_info else "Unknown"
+
     prompt = f"""
 You are an expert AI triage assistant.
 Analyze the patient's symptom summary and assign them to the most appropriate hospital department.
@@ -296,6 +325,7 @@ Also, provide an urgency score from 1 to 10 (1 = non-urgent, 10 = life-threateni
 Medical knowledge reference:
 {knowledge_text}
 
+Patient context: {patient_context}
 Patient summary: {summary}
 
 You must output ONLY a valid JSON object with these fields:
@@ -311,12 +341,13 @@ You must output ONLY a valid JSON object with these fields:
             
             # Swapped Gemini call for Ollama call
             response = ollama.chat(
-                model='llama3.1',
+                model='llama3.2',
                 messages=[{'role': 'user', 'content': prompt}],
                 format='json',
                 options={
                     'temperature': 0.0, # Kept at 0.0 for strict analytical output
-                    'num_predict': 512
+                    'num_predict': 512,
+                    'keep_alive': '5m'
                 }
             )
             

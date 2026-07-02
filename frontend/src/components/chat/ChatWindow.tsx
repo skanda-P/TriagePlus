@@ -5,6 +5,7 @@ import { useWebSocket, type WsStatus } from '../../hooks/useWebSocket';
 import { MessageBubble } from './MessageBubble';
 import { TypingDots } from '../shared/Spinner';
 import { TriageBadge } from '../shared/Badge';
+import { StethoscopeToggle } from '../shared/StethoscopeToggle';
 
 function WsStatusPill({ status }: { status: WsStatus }) {
   const map: Record<WsStatus, { label: string; cls: string; icon: React.ReactNode }> = {
@@ -67,7 +68,10 @@ export function ChatWindow({ sessionId }: { sessionId: string }) {
             <p className="text-xs text-slate-muted dark:text-ash mt-0.5">Triage assistant</p>
           </div>
         </div>
-        <WsStatusPill status={status} />
+        <div className="flex items-center gap-4">
+          <StethoscopeToggle />
+          <WsStatusPill status={status} />
+        </div>
       </div>
 
       {/* Triage result card */}
