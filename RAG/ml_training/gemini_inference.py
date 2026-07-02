@@ -29,7 +29,7 @@ DEPARTMENTS = [
 # The LLM may still choose "complete" early, but it can no longer loop
 # forever: once REQUIRED_SLOTS are filled, or MAX_INTERACTIVE_TURNS is hit,
 # the backend forces "complete" itself regardless of what the model returns.
-REQUIRED_SLOTS = ["chief_complaint", "onset", "severity"]
+REQUIRED_SLOTS = ["chief_complaint", "duration", "severity", "location", "associated_symptoms"]
 MAX_INTERACTIVE_TURNS = 6
 
 _embedder = None
@@ -95,7 +95,7 @@ def _search_faiss(query: str, index, meta, top_k=3):
     return results, text_blob, max_score, t_embed, t_faiss
 
 def _empty_slots() -> dict:
-    return {"chief_complaint": None, "onset": None, "severity": None, "associated_symptoms": []}
+    return {"chief_complaint": None, "duration": None, "severity": None, "location": None, "associated_symptoms": []}
 
 def _slots_satisfied(slots: dict) -> bool:
     return all(slots.get(k) for k in REQUIRED_SLOTS)
@@ -130,10 +130,12 @@ def _fallback_summary(slots: dict, chat_history: list) -> str:
     parts = []
     if slots.get("chief_complaint"):
         parts.append(f"Chief complaint: {slots['chief_complaint']}")
-    if slots.get("onset"):
-        parts.append(f"Onset: {slots['onset']}")
+    if slots.get("duration"):
+        parts.append(f"Duration: {slots['duration']}")
     if slots.get("severity"):
         parts.append(f"Severity: {slots['severity']}")
+    if slots.get("location"):
+        parts.append(f"Location: {slots['location']}")
     if slots.get("associated_symptoms"):
         parts.append(f"Associated symptoms: {', '.join(slots['associated_symptoms'])}")
 
@@ -178,36 +180,41 @@ async def infer_department_interactive(chat_history: list, session_id: str = "de
     embedder, index_a, _, meta_a, _ = _get_rag_components()
 
     known_slots = known_slots or _empty_slots()
-    missing = [s for s in REQUIRED_SLOTS if not known_slots.get(s)]
     force_complete = turn_count >= MAX_INTERACTIVE_TURNS
 
-    # RAG Amnesia fix
-    chief_complaint = known_slots.get("chief_complaint") or (chat_history[0]["content"] if chat_history else "")
-    latest_msg = chat_history[-1]["content"] if chat_history else ""
-    query = f"Patient symptom: {chief_complaint}. Latest update: {latest_msg}"
-    top_a, cases_text, _, t_embed, t_faiss = _search_faiss(query, index_a, meta_a, top_k=3)
+    # RAG Amnesia fix - build query from state
+    query_parts = []
+    if known_slots.get("chief_complaint"): query_parts.append(known_slots["chief_complaint"])
+    if known_slots.get("associated_symptoms"): query_parts.append(" ".join(known_slots["associated_symptoms"]))
+    if known_slots.get("location"): query_parts.append(known_slots["location"])
     
-    formatted_history = ""
-    for msg in chat_history:
-        role = "Doctor" if msg["role"] == "assistant" else "Patient"
-        formatted_history += f"{role}: {msg['content']}\n"
+    patient_msg = chat_history[-1]["content"] if chat_history else ""
+    doctor_msg = chat_history[-2]["content"] if len(chat_history) >= 2 else ""
+    query = " ".join(query_parts) if query_parts else patient_msg
+    
+    top_a, cases_text, max_score, t_embed, t_faiss = _search_faiss(query, index_a, meta_a, top_k=3)
+    if max_score < 0.35:
+        cases_text = ""
+        top_a = []
 
     # Step 1: Extraction
     patient_context = f"Age: {patient_info.get('age', 'Unknown')}, Gender: {patient_info.get('gender', 'Unknown')}" if patient_info else "Unknown"
 
-    extraction_prompt = f"""
-You are an expert medical triage assistant extracting symptoms.
+    extraction_prompt = f"""You are extracting structured medical intake data from a doctor-patient exchange.
+Given the running state and the new turn, return ONLY updated JSON (no prose, no markdown fences).
 PATIENT CONTEXT: {patient_context}
-ALREADY KNOWN: {json.dumps(known_slots, indent=2)}
-LATEST MESSAGE: {latest_msg}
 
-Extract the symptoms into this JSON format:
-- "slots": {{"chief_complaint": string or null, "onset": string or null, "severity": string or null, "associated_symptoms": [string]}}
+Current state:
+{json.dumps(known_slots, indent=2)}
 
-RULES:
-1. Do NOT blank out any values from ALREADY KNOWN. Merge any new details from LATEST MESSAGE.
-2. If a slot is NOT explicitly mentioned in the LATEST MESSAGE and NOT in ALREADY KNOWN, set it to exactly null. Do not use strings like "unknown" or "not mentioned".
-Output strict JSON only.
+New turn:
+Doctor: {doctor_msg}
+Patient: {patient_msg}
+
+Update only the fields the new turn provides new information for. Keep existing
+values unchanged unless contradicted. Fields: chief_complaint, duration, severity, location, associated_symptoms (list). Use null for unknown fields.
+Return strict JSON matching this schema:
+{{"slots": {{"chief_complaint": str|null, "duration": str|null, "severity": str|null, "location": str|null, "associated_symptoms": [str, ...]}}}}
 """
     t_llm = 0
     try:
@@ -221,6 +228,13 @@ Output strict JSON only.
         )
         t_llm += (time.time() - t0) * 1000
         raw = response['message']['content'].strip()
+        
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+            
         data = json.loads(raw, strict=False)
         merged_slots = _merge_slots(known_slots, data.get("slots"))
     except Exception as e:
@@ -228,8 +242,8 @@ Output strict JSON only.
         merged_slots = known_slots
 
     # Determine action using Python logic
-    new_missing = [s for s in REQUIRED_SLOTS if not merged_slots.get(s)]
-    if force_complete or not new_missing:
+    missing = [s for s in REQUIRED_SLOTS if not merged_slots.get(s)]
+    if force_complete or not missing:
         action = "complete"
     else:
         action = "ask"
@@ -260,24 +274,29 @@ Output strict JSON only.
         return
 
     # Step 2: Generation (Streaming)
-    instruction = ""
-    if "chief_complaint" in new_missing:
-        instruction = "The patient has not provided a clear chief complaint. Ask them politely to describe what brings them in."
-    elif "onset" in new_missing:
-        instruction = "The patient has not provided the onset of their symptoms. Ask them politely when the symptoms started."
-    elif "severity" in new_missing:
-        instruction = "The patient has not provided severity. Ask them politely to rate their pain or discomfort from 1-10."
-    else:
-        instruction = "Ask them politely for any more details about their symptoms."
+    filled_dict = {k: v for k, v in merged_slots.items() if v}
+    missing_list = [s for s in REQUIRED_SLOTS if not merged_slots.get(s)]
 
-    generation_prompt = f"""
-You are an expert medical triage assistant.
-Current conversation:
-{formatted_history}
+    instruction = (
+        "Do NOT ask about any field in already_collected. "
+        "Ask about exactly one field from still_needed next, or politely ask for any other details if still_needed is empty."
+    )
+    
+    rag_context = f"\nRelevant past cases for guidance:\n{cases_text}" if cases_text else ""
+
+    system_prompt = f"""You are an expert medical triage assistant.
+PATIENT CONTEXT: {patient_context}
+
+already_collected: {json.dumps(filled_dict)}
+still_needed: {json.dumps(missing_list)}
+{rag_context}
 
 INSTRUCTION: {instruction}
-Respond directly to the patient as the Doctor in 1-2 short sentences. Do not include any internal thoughts, formatting, or JSON.
-"""
+Respond directly to the patient in 1-2 short sentences. Do not include any internal thoughts, formatting, prefixes like "Doctor:", or JSON."""
+
+    messages = [{'role': 'system', 'content': system_prompt}]
+    for msg in chat_history:
+        messages.append({'role': msg['role'], 'content': msg['content']})
 
     yield {"type": "stream_start"}
     full_reply = ""
@@ -285,8 +304,13 @@ Respond directly to the patient as the Doctor in 1-2 short sentences. Do not inc
     try:
         response_stream = await client.chat(
             model='llama3.2',
-            messages=[{'role': 'user', 'content': generation_prompt}],
-            options={'temperature': 0.3, 'num_predict': 256, 'keep_alive': '5m'},
+            messages=messages,
+            options={
+                'temperature': 0.3, 
+                'num_predict': 256, 
+                'keep_alive': '5m',
+                'stop': ['Patient:', '\nPatient', 'Doctor:', '\nDoctor']
+            },
             stream=True
         )
         async for chunk in response_stream:
@@ -310,7 +334,7 @@ Respond directly to the patient as the Doctor in 1-2 short sentences. Do not inc
             "reply": full_reply.strip(),
             "slots": merged_slots,
             "top_k_a": top_a,
-            "prompt": generation_prompt,
+            "prompt": json.dumps(messages),
             "raw_response": full_reply,
             "latencies": latencies
         }

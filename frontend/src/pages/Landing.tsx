@@ -11,6 +11,8 @@ const PASTEL_CARDS = [
 ];
 
 export default function Landing() {
+  const navigate = useNavigate();
+
   const startChat = () => {
     navigate('/chat');
   };
