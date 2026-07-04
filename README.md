@@ -26,16 +26,20 @@ Prerequisites: Python 3.10+
    python -m venv venv
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
-2. Install dependencies:
+2. **(Optional) Enable GPU Acceleration:** If you have an NVIDIA GPU, you must install the CUDA version of PyTorch **before** installing the rest of the requirements to enable hardware acceleration. For example (for CUDA 12.1):
+   ```bash
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+   ```
+3. Install the remaining dependencies:
    ```bash
    pip install -r requirements.txt
    ```
-3. Run Ollama locally with the LLaMA 3.2 model:
+4. Run Ollama locally with the LLaMA 3.2 model:
    ```bash
    ollama run llama3.2
    ```
    *(Ensure Ollama is running in the background before starting the server)*
-4. Run the FastAPI server:
+5. Run the FastAPI server:
    You can either run the `run.py` script from the project root:
    ```bash
    python run.py
