@@ -78,24 +78,31 @@ def download_hf_datasets():
         medquad = load_dataset("keivalya/MedQuad-MedicalQnADataset")
         medquad["train"].to_json(str(out_path_q))
 
-def _sentence_chunk(text, max_tokens=350, overlap=50):
+def semantic_chunks(text, sentence_embedder, threshold=0.62, max_tokens=380):
+    import numpy as np
     sentences = re.split(r'(?<=[.!?]) +', text)
+    if not sentences:
+        return []
+    if len(sentences) == 1:
+        return sentences
+        
+    embs = sentence_embedder.encode(sentences, normalize_embeddings=True)
     chunks = []
-    current_chunk = []
-    current_len = 0
-    for s in sentences:
-        s_len = len(s.split())
-        if current_len + s_len > max_tokens and current_chunk:
-            chunks.append(" ".join(current_chunk))
-            current_chunk = current_chunk[-max(1, len(current_chunk)//4):]
-            current_len = sum(len(x.split()) for x in current_chunk)
-        current_chunk.append(s)
-        current_len += s_len
-    if current_chunk:
-        chunks.append(" ".join(current_chunk))
+    current = [sentences[0]]
+    
+    for i in range(1, len(sentences)):
+        sim = float(np.dot(embs[i], embs[i-1]))
+        current_len = sum(len(s.split()) for s in current)
+        if sim < threshold or current_len > max_tokens:
+            chunks.append(" ".join(current))
+            current = [sentences[i]]
+        else:
+            current.append(sentences[i])
+    if current:
+        chunks.append(" ".join(current))
     return chunks
 
-def build_faiss_indexes():
+def build_faiss_index_a():
     import numpy as np, faiss
     import torch
     from transformers import AutoTokenizer, AutoModel
@@ -105,7 +112,7 @@ def build_faiss_indexes():
     faiss_dir.mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Loading MedCPT Article Encoder on {device}...")
+    logger.info(f"Loading MedCPT Article Encoder on {device} for Index A...")
     article_tokenizer = AutoTokenizer.from_pretrained("ncbi/MedCPT-Article-Encoder")
     article_model = AutoModel.from_pretrained("ncbi/MedCPT-Article-Encoder").to(device)
     
@@ -238,6 +245,36 @@ def build_faiss_indexes():
             json.dump(index_a_meta, f)
         logger.info(f"Index A saved.")
 
+def build_faiss_index_b():
+    import numpy as np, faiss
+    import torch
+    from transformers import AutoTokenizer, AutoModel
+    from sentence_transformers import SentenceTransformer
+    
+    data_dir = Path(__file__).parent / "data"
+    faiss_dir = Path(__file__).parent.parent / "faiss"
+    faiss_dir.mkdir(parents=True, exist_ok=True)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    logger.info(f"Loading MedCPT Article Encoder on {device} for Index B...")
+    article_tokenizer = AutoTokenizer.from_pretrained("ncbi/MedCPT-Article-Encoder")
+    article_model = AutoModel.from_pretrained("ncbi/MedCPT-Article-Encoder").to(device)
+    
+    def encode_batch(pairs, batch_size=64):
+        embs = []
+        for i in range(0, len(pairs), batch_size):
+            batch = pairs[i:i+batch_size]
+            inputs = article_tokenizer(batch, truncation=True, padding=True, return_tensors="pt", max_length=512)
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            with torch.no_grad():
+                emb = article_model(**inputs).last_hidden_state[:, 0, :].cpu().numpy()
+            embs.append(emb)
+        return np.vstack(embs)
+
+    logger.info(f"Loading all-MiniLM-L6-v2 on {device} for fast semantic chunking...")
+    chunking_embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device=str(device))
+
     logger.info("Building Index B (MedQuAD + Symptom2Disease)...")
     index_b_pairs = []
     index_b_meta = []
@@ -256,23 +293,22 @@ def build_faiss_indexes():
                     index_b_meta.append({"text": q, "source": "medquad_question", "extra": {"focus_area": fa}})
                     
                 if a:
-                    chunks = _sentence_chunk(a, max_tokens=350, overlap=50)
+                    chunks = semantic_chunks(a, chunking_embedder, threshold=0.62, max_tokens=380)
                     for chunk in chunks:
                         index_b_pairs.append([fa, chunk])
                         index_b_meta.append({"text": chunk, "source": "medquad_answer_chunk", "extra": {"focus_area": fa}})
 
-    symptom_dir = data_dir / "symptom2disease"
-    if symptom_dir.is_dir():
+    symptom_file = data_dir / "Symptom2Disease.csv"
+    if symptom_file.is_file():
         import csv
-        for csv_file in symptom_dir.rglob("*.csv"):
-            with open(csv_file, newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    label = row.get("label", "")
-                    text = row.get("text", "")
-                    if text:
-                        index_b_pairs.append([label, text])
-                        index_b_meta.append({"text": text, "source": "symptom2disease", "extra": {"disease_label": label}})
+        with open(symptom_file, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                label = row.get("label", "")
+                text = row.get("text", "")
+                if text:
+                    index_b_pairs.append([label, text])
+                    index_b_meta.append({"text": text, "source": "symptom2disease", "extra": {"disease_label": label}})
 
     logger.info(f"Embedding {len(index_b_pairs)} chunks for Index B...")
     if index_b_pairs:
@@ -287,11 +323,21 @@ def build_faiss_indexes():
         logger.info(f"Index B saved.")
 
 if __name__ == "__main__":
+    import argparse
     from dotenv import load_dotenv
     env_path = Path(__file__).parent.parent.parent / "backend" / ".env"
     load_dotenv(env_path)
 
+    parser = argparse.ArgumentParser(description="TriagePlus Embeddings Setup")
+    parser.add_argument("--index", choices=["a", "b", "both"], default="both", help="Which index to build (a, b, or both)")
+    args = parser.parse_args()
+
     extract_conversations()
     download_hf_datasets()
-    build_faiss_indexes()
+    
+    if args.index in ["a", "both"]:
+        build_faiss_index_a()
+    if args.index in ["b", "both"]:
+        build_faiss_index_b()
+        
     logger.info("Setup completed successfully.")
