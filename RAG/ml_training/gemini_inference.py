@@ -1,7 +1,7 @@
 # local_inference.py (formerly gemini_inference.py)
 """
 Local LLM interactive and final inference module for TriagePlus using Ollama.
-Loads SentenceTransformer and FAISS globally to eliminate latency.
+Loads MedCPT Query Encoder and FAISS globally to eliminate latency.
 """
 
 import os
@@ -10,7 +10,8 @@ import logging
 from pathlib import Path
 import numpy as np
 import time
-import ollama  # Replaced google.generativeai with ollama
+import asyncio
+import ollama
 
 # Set KMP flag before any heavy imports to prevent OpenMP deadlocks on Windows
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -24,11 +25,6 @@ DEPARTMENTS = [
     "Pediatrics", "Psychiatry", "Pulmonology", "Rheumatology", "Urology",
 ]
 
-# ── Convergence controls ────────────────────────────────────────────────────
-# Convergence is enforced here in code, not just requested in the prompt.
-# The LLM may still choose "complete" early, but it can no longer loop
-# forever: once REQUIRED_SLOTS are filled, or MAX_INTERACTIVE_TURNS is hit,
-# the backend forces "complete" itself regardless of what the model returns.
 REQUIRED_SLOTS = ["chief_complaint", "duration", "severity", "location", "associated_symptoms"]
 MAX_INTERACTIVE_TURNS = 6
 
@@ -38,29 +34,46 @@ _index_b = None
 _meta_a = None
 _meta_b = None
 
-# Removed _get_gemini_client() entirely as Ollama runs as a background service
-
 def _get_rag_components():
     global _embedder, _index_a, _index_b, _meta_a, _meta_b
     if _embedder is None:
-        logger.info("Loading SentenceTransformer and FAISS indices into memory...")
-        from sentence_transformers import SentenceTransformer
+        logger.info("Loading MedCPT Query Encoder and FAISS indices into memory...")
+        import torch
+        from transformers import AutoTokenizer, AutoModel
         import faiss
         
-        # Load embedder
         try:
-            _embedder = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', local_files_only=True)
-        except Exception:
-            logger.warning("Local files not found, attempting to download...")
-            _embedder = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+            tokenizer = AutoTokenizer.from_pretrained("ncbi/MedCPT-Query-Encoder")
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            model = AutoModel.from_pretrained("ncbi/MedCPT-Query-Encoder").to(device)
+            logger.info(f"Loaded MedCPT Query Encoder on {device}.")
+        except Exception as e:
+            logger.error(f"Failed to load MedCPT Query Encoder: {e}")
+            raise
+
+        class MedCPTQueryEmbedder:
+            def __init__(self, tokenizer, model, device):
+                self.tokenizer = tokenizer
+                self.model = model
+                self.device = device
+            def encode(self, texts, **kwargs):
+                if isinstance(texts, str):
+                    texts = [texts]
+                inputs = self.tokenizer(texts, truncation=True, padding=True, return_tensors="pt", max_length=64)
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                with torch.no_grad():
+                    # [CLS] pooling
+                    embs = self.model(**inputs).last_hidden_state[:, 0, :]
+                return embs.cpu().numpy()
+                
+        _embedder = MedCPTQueryEmbedder(tokenizer, model, device)
+
         faiss_dir = Path(__file__).parent.parent / "faiss"
         
-        # Load FAISS Index A (Conversations)
         _index_a = faiss.read_index(str(faiss_dir / "index_a.faiss"))
         with open(faiss_dir / "index_a_meta.json", "r", encoding="utf-8") as f:
             _meta_a = json.load(f)
             
-        # Load FAISS Index B (Medical Knowledge)
         _index_b = faiss.read_index(str(faiss_dir / "index_b.faiss"))
         with open(faiss_dir / "index_b_meta.json", "r", encoding="utf-8") as f:
             _meta_b = json.load(f)
@@ -83,14 +96,19 @@ def _search_faiss(query: str, index, meta, top_k=3):
     results = []
     text_blob = ""
     max_score = -1.0
+    MIN_CHUNK_SCORE = 0.35
     
     for i, idx in enumerate(I[0]):
         if idx != -1 and idx < len(meta):
             score = float(D[0][i])
+            if score < MIN_CHUNK_SCORE:
+                continue  # drop weak matches individually
             if score > max_score:
                 max_score = score
             results.append(meta[int(idx)])
-            text_blob += f"- {meta[int(idx)].get('text', '')}\n"
+            # Cap text injected to prevent context bloat and hallucination transfer
+            text = meta[int(idx)].get('text', '')[:250]
+            text_blob += f"- {text}\n"
             
     return results, text_blob, max_score, t_embed, t_faiss
 
@@ -110,8 +128,6 @@ def _is_valid_slot(value):
     return True
 
 def _merge_slots(known: dict, model_slots: dict | None) -> dict:
-    """Slots only ever get filled in, never erased — a flaky extraction on a
-    later turn can't un-ask a question that was already answered earlier."""
     merged = dict(known)
     model_slots = model_slots or {}
     for k in REQUIRED_SLOTS:
@@ -125,8 +141,6 @@ def _merge_slots(known: dict, model_slots: dict | None) -> dict:
     return merged
 
 def _fallback_summary(slots: dict, chat_history: list) -> str:
-    """Used if we're forcing completion (turn cap or LLM failure) and the
-    model didn't hand back a usable 'summary' field itself."""
     parts = []
     if slots.get("chief_complaint"):
         parts.append(f"Chief complaint: {slots['chief_complaint']}")
@@ -143,14 +157,24 @@ def _fallback_summary(slots: dict, chat_history: list) -> str:
     if parts:
         summary = ". ".join(parts) + "."
         if still_missing:
-            # Told explicitly, not just implied by absence — this also helps
-            # infer_department_final() itself stay conservative downstream.
             summary += f" (Not confirmed: {', '.join(still_missing)}.)"
         return summary
     return " ".join(m["content"] for m in chat_history if m["role"] == "user")
 
+EMERGENCY_KEYWORDS = [
+    "can't breathe", "cannot breathe", "chest pain", "unconscious",
+    "severe bleeding", "not breathing", "stroke", "heart attack",
+]
+
+def _keyword_emergency_check(text: str) -> bool:
+    t = text.lower()
+    return any(kw in t for kw in EMERGENCY_KEYWORDS)
+
 async def check_emergency_llm(text: str) -> bool:
     """Uses LLM to detect if the patient message is a medical emergency."""
+    if _keyword_emergency_check(text):
+        return True
+        
     prompt = f"""
 Analyze the following patient message. Is it a life-threatening medical emergency (e.g. heart attack, stroke, severe bleeding, not breathing, unconscious)?
 Ignore negative statements like "I do not have chest pain".
@@ -160,12 +184,13 @@ Patient Message: "{text}"
 """
     try:
         client = ollama.AsyncClient()
-        response = await client.chat(
+        response = await asyncio.wait_for(client.chat(
             model='llama3.2',
             messages=[{'role': 'user', 'content': prompt}],
             format='json',
             options={'temperature': 0.0, 'num_predict': 128, 'keep_alive': '5m'}
-        )
+        ), timeout=10.0)
+        
         raw = response['message']['content'].strip()
         data = json.loads(raw, strict=False)
         return bool(data.get("is_emergency", False))
@@ -182,7 +207,6 @@ async def infer_department_interactive(chat_history: list, session_id: str = "de
     known_slots = known_slots or _empty_slots()
     force_complete = turn_count >= MAX_INTERACTIVE_TURNS
 
-    # RAG Amnesia fix - build query from state
     query_parts = []
     if known_slots.get("chief_complaint"): query_parts.append(known_slots["chief_complaint"])
     if known_slots.get("associated_symptoms"): query_parts.append(" ".join(known_slots["associated_symptoms"]))
@@ -192,12 +216,11 @@ async def infer_department_interactive(chat_history: list, session_id: str = "de
     doctor_msg = chat_history[-2]["content"] if len(chat_history) >= 2 else ""
     query = " ".join(query_parts) if query_parts else patient_msg
     
-    top_a, cases_text, max_score, t_embed, t_faiss = _search_faiss(query, index_a, meta_a, top_k=3)
-    if max_score < 0.35:
-        cases_text = ""
-        top_a = []
-
-    # Step 1: Extraction
+    # Offload the blocking FAISS search (and embedding) to a thread
+    top_a, cases_text, max_score, t_embed, t_faiss = await asyncio.to_thread(
+        _search_faiss, query, index_a, meta_a, top_k=3
+    )
+    
     patient_context = f"Age: {patient_info.get('age', 'Unknown')}, Gender: {patient_info.get('gender', 'Unknown')}" if patient_info else "Unknown"
 
     extraction_prompt = f"""You are extracting structured medical intake data from a doctor-patient exchange.
@@ -220,12 +243,12 @@ Return strict JSON matching this schema:
     try:
         t0 = time.time()
         client = ollama.AsyncClient()
-        response = await client.chat(
+        response = await asyncio.wait_for(client.chat(
             model='llama3.2',
             messages=[{'role': 'user', 'content': extraction_prompt}],
             format='json',
             options={'temperature': 0.1, 'num_predict': 512, 'keep_alive': '5m'}
-        )
+        ), timeout=15.0)
         t_llm += (time.time() - t0) * 1000
         raw = response['message']['content'].strip()
         
@@ -241,7 +264,6 @@ Return strict JSON matching this schema:
         logger.error(f"Extraction failed: {e}")
         merged_slots = known_slots
 
-    # Determine action using Python logic
     missing = [s for s in REQUIRED_SLOTS if not merged_slots.get(s)]
     if force_complete or not missing:
         action = "complete"
@@ -251,7 +273,7 @@ Return strict JSON matching this schema:
     latencies = {
         "embed": round(t_embed, 2),
         "faiss": round(t_faiss, 2),
-        "llm": 0, # Will update
+        "llm": 0,
         "total": 0
     }
 
@@ -273,16 +295,20 @@ Return strict JSON matching this schema:
         }
         return
 
-    # Step 2: Generation (Streaming)
     filled_dict = {k: v for k, v in merged_slots.items() if v}
     missing_list = [s for s in REQUIRED_SLOTS if not merged_slots.get(s)]
 
     instruction = (
         "Do NOT ask about any field in already_collected. "
-        "Ask about exactly one field from still_needed next, or politely ask for any other details if still_needed is empty."
+        "Ask about exactly one field from still_needed next, or politely ask for any other details if still_needed is empty. "
+        "Do not copy or reference specific details from the unrelated past cases below — they are style examples only."
     )
     
-    rag_context = f"\nRelevant past cases for guidance:\n{cases_text}" if cases_text else ""
+    rag_context = (
+        f"\nUNRELATED PAST CASES (for question-phrasing style only — "
+        f"do NOT state, imply, or ask about any specific fact, diagnosis, or detail "
+        f"from these unless the current patient has said it themselves):\n{cases_text}"
+    ) if cases_text else ""
 
     system_prompt = f"""You are an expert medical triage assistant.
 PATIENT CONTEXT: {patient_context}
@@ -302,7 +328,7 @@ Respond directly to the patient in 1-2 short sentences. Do not include any inter
     full_reply = ""
     t0 = time.time()
     try:
-        response_stream = await client.chat(
+        response_stream = await asyncio.wait_for(client.chat(
             model='llama3.2',
             messages=messages,
             options={
@@ -312,7 +338,7 @@ Respond directly to the patient in 1-2 short sentences. Do not include any inter
                 'stop': ['Patient:', '\nPatient', 'Doctor:', '\nDoctor']
             },
             stream=True
-        )
+        ), timeout=30.0)
         async for chunk in response_stream:
             text = chunk['message']['content']
             full_reply += text
@@ -340,11 +366,25 @@ Respond directly to the patient in 1-2 short sentences. Do not include any inter
         }
     }
 
+GENERAL_MEDICINE_DEFAULTS = {
+    "fever", "headache", "fatigue", "tiredness", "sore throat",
+    "common cold", "mild cough", "body ache", "general weakness",
+}
+SPECIALTY_OVERRIDE_TERMS = {
+    "worst headache", "neck stiffness", "chest pain", "vision loss",
+    "seizure", "severe", "unconscious", "difficulty breathing",
+    "blood in", "pregnant", "rash spreading",
+}
+
+def _rule_based_department(summary: str) -> str | None:
+    s = summary.lower()
+    if any(term in s for term in SPECIALTY_OVERRIDE_TERMS):
+        return None
+    if any(term in s for term in GENERAL_MEDICINE_DEFAULTS):
+        return "General Medicine"
+    return None
+
 def infer_department_final(summary: str, session_id: str = "default", patient_info: dict | None = None):
-    """
-    Called when LLM decides the conversation is "complete".
-    Uses Index B (knowledge base) to make final department and urgency prediction.
-    """
     logger.info(f"Running final triage inference for session {session_id}...")
     embedder, _, index_b, _, meta_b = _get_rag_components()
     
@@ -356,6 +396,14 @@ def infer_department_final(summary: str, session_id: str = "default", patient_in
 You are an expert AI triage assistant.
 Analyze the patient's symptom summary and assign them to the most appropriate hospital department.
 Also, provide an urgency score from 1 to 10 (1 = non-urgent, 10 = life-threatening emergency).
+
+If the symptoms are common, non-specific, and show no red-flag or specialty-defining
+features (e.g., isolated fever, mild headache, general fatigue, common cold symptoms),
+assign "General Medicine" rather than a specific specialty.
+
+Example: "Fever for 2 days, mild fatigue, no other symptoms." → General Medicine.
+Example: "Headache since this morning, no nausea, no vision changes, no neck stiffness." → General Medicine.
+Example: "Worst headache of my life, sudden onset, blurred vision." → Neurology.
 
 Medical knowledge reference:
 {knowledge_text}
@@ -370,17 +418,18 @@ You must output ONLY a valid JSON object with these fields:
 - "reasoning": a brief explanation of why you chose this department and urgency.
 """
     
+    rule_dept = _rule_based_department(summary)
+    
     for attempt in range(1, 4):
         try:
             t0_llm = time.time()
             
-            # Swapped Gemini call for Ollama call
             response = ollama.chat(
                 model='llama3.2',
                 messages=[{'role': 'user', 'content': prompt}],
                 format='json',
                 options={
-                    'temperature': 0.0, # Kept at 0.0 for strict analytical output
+                    'temperature': 0.0,
                     'num_predict': 512,
                     'keep_alive': '5m'
                 }
@@ -401,7 +450,9 @@ You must output ONLY a valid JSON object with these fields:
             conf = float(data.get("confidence", 0.0))
             urgency = int(data.get("urgency_score", 1))
             
-            if conf < 0.6 or max_score < 0.3:
+            if rule_dept:
+                dept = rule_dept
+            elif conf < 0.6 or max_score < 0.3:
                 logger.warning(f"Low confidence ({conf}) or poor RAG match ({max_score}). Falling back to General Medicine.")
                 dept = "General Medicine"
                 

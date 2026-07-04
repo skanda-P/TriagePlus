@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 import uuid, asyncio, json
 import sys, os
+import sqlite3
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../RAG")))
 from ml_training.gemini_inference import infer_department_interactive, infer_department_final, DEPARTMENTS, _get_rag_components, check_emergency_llm
@@ -49,10 +50,26 @@ async def doctor_login(req: LoginRequest):
 async def get_doctor_queue():
     return []
 
-# ── In-memory session store ────────────────────────────────────────────────────
-_sessions: dict[str, dict] = {}
+# ── SQLite session store ───────────────────────────────────────────────────────
+DB_PATH = os.path.join(os.path.dirname(__file__), "sessions.db")
 
+def _init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, data TEXT)")
 
+_init_db()
+
+def _get_session(session_id: str) -> dict | None:
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.execute("SELECT data FROM sessions WHERE id = ?", (session_id,))
+        row = cursor.fetchone()
+        if row:
+            return json.loads(row[0])
+    return None
+
+def _save_session(session_id: str, data: dict):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("INSERT OR REPLACE INTO sessions (id, data) VALUES (?, ?)", (session_id, json.dumps(data)))
 
 # ── WebSocket endpoint (primary) ───────────────────────────────────────────────
 @router.websocket("/ws/chat/{session_id}")
@@ -65,20 +82,18 @@ async def patient_ws(websocket: WebSocket, session_id: str):
 
     await websocket.accept()
 
-    if session_id not in _sessions:
-        _sessions[session_id] = {
+    state = _get_session(session_id)
+    is_new = state is None
+
+    if is_new:
+        state = {
             "fsm_state": "NAME_ENTRY",
             "history": [], # Stores dicts like {"role": "user", "content": "..."}
             "turn_count": 0,
-            "slots": None,  # filled in by infer_department_interactive as symptoms are gathered
+            "slots": None,
         }
-        # Pre-load RAG components (embedding model and FAISS) in the background
-        # to hide latency while the user is answering hardcoded questions.
+        _save_session(session_id, state)
         asyncio.create_task(asyncio.to_thread(_get_rag_components))
-
-    state = _sessions[session_id]
-
-    if state.get("fsm_state") == "NAME_ENTRY":
         try:
             await websocket.send_json({
                 "type": "message",
@@ -87,6 +102,16 @@ async def patient_ws(websocket: WebSocket, session_id: str):
             })
         except Exception:
             return
+    else:
+        if state.get("fsm_state") != "NAME_ENTRY":
+            try:
+                await websocket.send_json({
+                    "type": "sync_history",
+                    "history": state.get("history", []),
+                    "state": state.get("fsm_state")
+                })
+            except Exception as e:
+                logger.error(f"Failed to sync history on reconnect: {e}")
 
     async def ping_loop():
         while True:
@@ -109,14 +134,16 @@ async def patient_ws(websocket: WebSocket, session_id: str):
 
             fsm = state.get("fsm_state", "NAME_ENTRY")
 
-            if await check_emergency_llm(content):
-                await websocket.send_json({
-                    "type": "emergency",
-                    "content": "⚠️ This sounds like a medical emergency. Please call 112 immediately or go to your nearest ER.",
-                    "state": "EMERGENCY",
-                })
-                await websocket.close()
-                return
+            # Gate emergency check to only run during symptom phases
+            if fsm in ["INITIAL_SYMPTOM", "GEMINI_CONVERSATION"]:
+                if await check_emergency_llm(content):
+                    await websocket.send_json({
+                        "type": "emergency",
+                        "content": "⚠️ This sounds like a medical emergency. Please call 112 immediately or go to your nearest ER.",
+                        "state": "EMERGENCY",
+                    })
+                    await websocket.close()
+                    return
 
             if fsm == "NAME_ENTRY":
                 if len(content) < 2 or content.isdigit():
@@ -143,7 +170,6 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                     await websocket.send_json({"type": "message", "content": "Got it. What is your phone number?", "state": "PHONE_ENTRY"})
 
             elif fsm == "PHONE_ENTRY":
-                # Very basic validation: only digits and lengths typical of phone numbers
                 cleaned = ''.join(filter(str.isdigit, content))
                 if len(cleaned) < 7:
                     await websocket.send_json({"type": "error", "content": "Please enter a valid phone number (at least 7 digits)."})
@@ -156,11 +182,9 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                 state["history"].append({"role": "user", "content": content})
                 state["turn_count"] = state.get("turn_count", 0) + 1
                 
-                # Tell frontend we are typing
                 await websocket.send_json({"type": "typing", "content": True})
                 
                 try:
-                    # Async generator handling for interactive step
                     gemini_res = None
                     async for payload in infer_department_interactive(
                         state["history"], session_id,
@@ -206,7 +230,6 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                     elif action == "complete":
                         summary = gemini_res.get("summary", content)
                         
-                        # Run final triage inference
                         dept, conf, urgency, diag = await asyncio.to_thread(
                             infer_department_final, summary, session_id,
                             patient_info={"gender": state.get("gender"), "age": state.get("age")}
@@ -220,7 +243,6 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                         
                         confidence_pct = int(conf * 100)
                         
-                        # Set color based on urgency
                         if urgency >= 8:
                             color = "red"
                         elif urgency >= 5:
@@ -282,7 +304,7 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                     "state": fsm,
                 })
 
-            _sessions[session_id] = state
+            _save_session(session_id, state)
 
     except WebSocketDisconnect:
         pass
