@@ -77,7 +77,6 @@ def download_hf_datasets():
     except Exception as e:
         logger.error(f"Failed to load MedDialog via load_dataset: {e}")
         if meddialog_path.is_file():
-            import json
             logger.info("Converting local en_medical_dialog.json to JSONL...")
             with meddialog_path.open("r", encoding="utf-8") as f_in, out_path.open(
                 "w", encoding="utf-8"
@@ -95,7 +94,7 @@ def download_hf_datasets():
     medquad_csv = data_dir / "medquad.csv"
     out_path_q = data_dir / "medquad.jsonl"
     if medquad_csv.is_file():
-        import pandas as pd, json
+        import pandas as pd
         df = pd.read_csv(medquad_csv)
         df = df.rename(columns={c: c.title() for c in df.columns})
         with out_path_q.open("w", encoding="utf-8") as f:
@@ -178,7 +177,6 @@ def build_faiss_indexes():
     texts_b = []
     medquad_path = data_dir / "medquad.jsonl"
     if medquad_path.is_file():
-        import json
         with open(medquad_path, "r", encoding="utf-8") as f:
             for ln in f:
                 obj = json.loads(ln)
@@ -243,7 +241,6 @@ def collect_real_samples():
     # MedDialog samples
     meddialog_path = data_dir / "meddialog_en_train.jsonl"
     if meddialog_path.is_file():
-        import json
         with open(meddialog_path, "r", encoding="utf-8") as f:
             for ln in f:
                 obj = json.loads(ln)
