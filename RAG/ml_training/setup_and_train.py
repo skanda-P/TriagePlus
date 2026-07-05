@@ -307,12 +307,12 @@ def run_department_inference(samples):
 # Main execution
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    from dotenv import load_dotenv
-    env_path = Path(__file__).parent.parent.parent / "backend" / ".env"
-    load_dotenv(env_path)
+    # from dotenv import load_dotenv
+    # env_path = Path(__file__).parent.parent.parent / "backend" / ".env"
+    # load_dotenv(env_path)
 
-    if not os.environ.get("GEMINI_API_KEY"):
-        raise EnvironmentError("GEMINI_API_KEY is not set. Export it before running.")
+    # if not os.environ.get("GEMINI_API_KEY"):
+    #     raise EnvironmentError("GEMINI_API_KEY is not set. Export it before running.")
     extract_conversations()
     download_hf_datasets()
     # Skipping Kaggle and MedlinePlus downloads as per user request
