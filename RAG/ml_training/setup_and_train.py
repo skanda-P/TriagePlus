@@ -144,7 +144,7 @@ def build_faiss_indexes():
             with open(txt_file, "r", encoding="utf-8", errors="ignore") as f:
                 lines = [l.strip() for l in f if l.strip()]
             dialogue_lines = [l for l in lines if l.startswith("D:") or l.startswith("P:")]
-            window_size = 6  # 3 turns
+            window_size = 4  # 2 turns
             step = 4         # overlap of 1 turn (2 lines)
             for i in range(0, len(dialogue_lines), step):
                 chunk_lines = dialogue_lines[i:i+window_size]
