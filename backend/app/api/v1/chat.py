@@ -37,18 +37,7 @@ async def diagnostics_ws(websocket: WebSocket):
     except WebSocketDisconnect:
         _diagnostic_clients.remove(websocket)
 
-# ── Mock Doctor Endpoints ──────────────────────────────────────────────────────
-class LoginRequest(BaseModel):
-    email: str
-    password: str
 
-@router.post("/auth/doctor/login")
-async def doctor_login(req: LoginRequest):
-    return {"access_token": "dummy_token"}
-
-@router.get("/doctors/me/queue")
-async def get_doctor_queue():
-    return []
 
 # ── SQLite session store ───────────────────────────────────────────────────────
 DB_PATH = os.path.join(os.path.dirname(__file__), "sessions.db")
@@ -178,7 +167,7 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                     state["fsm_state"] = "INITIAL_SYMPTOM"
                     await websocket.send_json({"type": "message", "content": "Thank you. What brings you in today? Please describe your symptoms.", "state": "INITIAL_SYMPTOM"})
 
-            elif fsm in ["INITIAL_SYMPTOM", "GEMINI_CONVERSATION"]:
+            elif fsm in ["INITIAL_SYMPTOM", "GEMINI_CONVERSATION", "RECOMMENDING", "BOOKING"]:
                 state["history"].append({"role": "user", "content": content})
                 state["turn_count"] = state.get("turn_count", 0) + 1
                 
@@ -208,47 +197,32 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                     # Stream graph updates
                     async for event in triage_app.astream(None, config, stream_mode="updates"):
                         for node_name, node_state in event.items():
+                            # Send Diagnostic Event
+                            diagnostic_data = {
+                                "type": "diagnostic_update",
+                                "node": node_name,
+                                "state": {k: v for k, v in node_state.items() if k != "messages"} # Exclude full message history to save bandwidth
+                            }
+                            await broadcast_diagnostic(diagnostic_data)
+
                             if "messages" in node_state and node_state["messages"]:
                                 last_msg = node_state["messages"][-1].content
                                 await websocket.send_json({"type": "typing", "content": False})
                                 await websocket.send_json({"type": "message", "content": last_msg, "state": "GEMINI_CONVERSATION"})
                                 state["fsm_state"] = "GEMINI_CONVERSATION"
                                 
-                            if "triage_summary" in node_state:
-                                # We hit the end node
+                            if node_name == "process_payment" and node_state.get("payment_status") == "succeeded":
                                 await websocket.send_json({"type": "typing", "content": False})
                                 await websocket.send_json({
                                     "type": "triage_complete",
-                                    "summary": node_state["triage_summary"],
-                                    "department": node_state.get("department", ""),
-                                    "final_diagnosis": node_state.get("final_diagnosis", "")
+                                    "summary": "Appointment Booked and Paid",
                                 })
-                                state["fsm_state"] = "RECOMMENDING"
-                                state["department"] = node_state.get("department", "")
-                                _save_session(session_id, state)
-                                break
                 except Exception as exc:
                     logger.error(f"LangGraph failed: {exc}", exc_info=True)
                     await websocket.send_json({"type": "typing", "content": False})
-                    await websocket.send_json({"type": "error", "content": "I encountered an error analyzing your symptoms. Could you try rephrasing?"})
+                    await websocket.send_json({"type": "error", "content": "I encountered an error. Could you try rephrasing?"})
                     
                 _save_session(session_id, state)
-
-            elif fsm == "RECOMMENDING":
-                lower = content.lower()
-                if any(w in lower for w in ["book", "yes", "appointment", "schedule"]):
-                    state["fsm_state"] = "BOOKING"
-                    await websocket.send_json({
-                        "type": "message",
-                        "content": f"Great! I'll help you book an appointment with {state.get('department', 'a specialist')}. Please visit our appointment booking portal.",
-                        "state": "BOOKING",
-                    })
-                else:
-                    await websocket.send_json({
-                        "type": "message",
-                        "content": "I understand. Let me know if you would like to book an appointment.",
-                        "state": "RECOMMENDING",
-                    })
 
             else:
                 await websocket.send_json({

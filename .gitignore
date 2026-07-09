@@ -52,5 +52,6 @@ logs/
 *.log
 
 # FAISS Indices (if they get too large to commit, but you might want to keep small ones)
-ai_engine/ml_training/models/*.pkl
-ai_engine/ml_training/models/*.json
+# We want to commit the models for easy local testing
+# ai_engine/ml_training/models/*.pkl
+# ai_engine/ml_training/models/*.json

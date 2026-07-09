@@ -17,8 +17,11 @@ TriagePlus is a modern medical triage assistant that uses a hybrid architecture 
 2. A WebSocket connection is established and conversation state is tracked via **SQLite Saver**.
 3. Patient describes symptoms.
 4. The **LangGraph Triage Pipeline** processes the message:
+   - **Symptom Extraction**: A HuggingFace Medical NER pipeline (`d4data/biomedical-ner-all`) extracts clinical entities and maps them to precise `DDXPlus` evidence codes.
    - **Emergency Screening**: Validates if the condition is life-threatening (T1 Mitigation).
-   - **Symptom Extraction**: LLM maps natural language to precise `DDXPlus` evidence codes.
+   - **Next Question Generation**: LLM uses RAG on MedDialog and the Knowledge Graph to ask empathetic follow-up questions.
    - **Condition Classification**: XGBoost predicts the pathology with an attached confidence score.
-   - **Department Routing**: Falls back gracefully to standard departments if specialized ones are missing.
-5. The session is closed and results are written to Supabase.
+   - **Explanation**: LLM uses RAG on MedQuAD to explain the diagnosis and route to a department.
+   - **Booking & Payment**: The pipeline prompts the user to book a slot, fetches available clinician slots from Supabase, processes a payment, and confirms the appointment.
+5. Live RAG and LangGraph node diagnostics are broadcasted to `/ws/diagnostics` for the Developer Monitor.
+6. The session is closed and results are written to Supabase.

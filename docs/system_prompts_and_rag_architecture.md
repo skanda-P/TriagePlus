@@ -22,7 +22,7 @@ Before deciding on indices, models, or chunking — **where does this system act
 |---|---|---|---|
 | Emergency detection | Catches life-threatening messages | ❌ **No** | Deterministic keyword match + LLM yes/no classification. No external context needed — the question is "is this text an emergency?", not "what disease is this?" |
 | Demographics collection | Name, age, gender, phone | ❌ **No** | Simple form-filling, no medical reasoning |
-| Slot extraction | Parse symptoms from conversation | ❌ **No** | The LLM extracts from what the patient *said*, not from external sources. Injecting RAG here is how contamination happens. |
+| Slot extraction | Parse symptoms from conversation | ❌ **No** | A Medical NER pipeline (`d4data/biomedical-ner-all`) extracts from what the patient *said*, not from external sources. |
 | **Next-question selection** | Decide what to ask next | ✅ **Yes — structured lookup** | Needs to know "given symptom X, what other evidences differentiate the possible pathologies?" This is the **knowledge graph** (DDXPlus), not vector retrieval. |
 | **Follow-up question phrasing** | Generate the actual question text | **Debatable** | The LLM can phrase questions from DDXPlus evidence descriptions + system prompt. RAG-sourced conversation examples add contamination risk for marginal phrasing quality. **Decision: No RAG here.** |
 | **Classification explanation** | Explain why department X was chosen | ✅ **Yes — vector retrieval** | After XGBoost decides the department, the LLM needs medical facts to explain *why*. This is the one place vector retrieval over MedQuAD genuinely helps. |

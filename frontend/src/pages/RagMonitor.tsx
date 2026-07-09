@@ -1,19 +1,22 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Database, Search, ArrowRight, Zap, RefreshCw, ChevronDown, ChevronRight, Activity } from 'lucide-react';
+import { Database, Search, ArrowRight, Zap, RefreshCw, ChevronDown, ChevronRight, Activity, Clock } from 'lucide-react';
 import { buildWsUrl } from '../utils/api';
 
 interface DiagnosticEvent {
-  type: string;
-  session_id: string;
-  query: string;
-  top_k_a: { specialty?: string; source?: string; text: string }[];
-  top_k_b: { text: string }[];
-  prompt: string;
-  raw_response: string;
-  department: string;
-  confidence: number;
-  latencies?: { embed: number; faiss: number; llm: number; total: number };
+  node: string;
+  state: {
+    session_id: string;
+    present_symptoms: string[];
+    absent_symptoms: string[];
+    is_emergency: boolean;
+    final_diagnosis: string | null;
+    department: string | null;
+    confidence: number;
+    urgency: number;
+    rag_chunks: string[];
+    latencies: Record<string, number>;
+  };
 }
 
 const Collapsible = ({ title, children, defaultOpen = false }: { title: React.ReactNode, children: React.ReactNode, defaultOpen?: boolean }) => {
@@ -54,7 +57,7 @@ export default function RagMonitor() {
     ws.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
-        if (data.type === 'diagnostic') {
+        if (data.type === 'diagnostic_update') {
           setEvents((prev) => [...prev, data]);
           setTimeout(() => {
             if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -81,7 +84,7 @@ export default function RagMonitor() {
             <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-sm" style={{ backgroundColor: 'var(--color-indigo-bloom)' }}>
               <Activity className="w-5 h-5" />
             </div>
-            <span className="font-semibold text-base text-charcoal dark:text-white transition-colors">RAG Diagnostic Monitor</span>
+            <span className="font-semibold text-base text-charcoal dark:text-white transition-colors">LangGraph & RAG Monitor</span>
           </div>
           <div className="flex items-center gap-4">
             <span className={`text-xs font-semibold px-2 py-1 rounded ${status === 'connected' ? 'bg-green-100 text-green-700' : status === 'connecting' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
@@ -105,81 +108,55 @@ export default function RagMonitor() {
           {events.length === 0 && (
             <div className="text-center py-20 text-slate-muted flex flex-col items-center">
               <Search className="w-12 h-12 mb-4 opacity-20" />
-              <p>Waiting for RAG inference events...</p>
+              <p>Waiting for LangGraph inference events...</p>
               <p className="text-xs mt-2">Open the Patient Chat in another window and send a message.</p>
             </div>
           )}
 
-          {events.map((ev, i) => (
+          {events.map((ev, i) => {
+            const s = ev.state || {};
+            const chunks = s.rag_chunks || [];
+            const lat = s.latencies || {};
+
+            return (
             <div key={i} className="card-white dark:bg-slate-800 dark:border-gray-700 border-l-4 transition-colors duration-300" style={{ borderLeftColor: 'var(--color-indigo-bloom)' }}>
               <div className="flex justify-between items-start mb-4">
                 <div>
-                  <span className="text-xs font-mono text-ash bg-cloud-gray dark:bg-slate-900 px-2 py-1 rounded">Session: {ev.session_id}</span>
-                  <h3 className="font-bold text-charcoal dark:text-white mt-2 text-lg">Query: "{ev.query}"</h3>
+                  <span className="text-xs font-mono text-white bg-indigo-bloom dark:bg-sky-signal px-2 py-1 rounded">Node: {ev.node}</span>
+                  <div className="mt-3">
+                    <h4 className="text-xs font-bold text-slate-muted uppercase mb-1">Extracted Symptoms (E_Codes)</h4>
+                    <p className="font-mono text-sm">{s.present_symptoms?.length ? s.present_symptoms.join(', ') : 'None'}</p>
+                  </div>
                 </div>
                 <div className="text-right">
-                  <div className="text-xs text-slate-muted uppercase tracking-wider mb-1">Result</div>
-                  <div className="font-bold text-indigo-bloom">{ev.department}</div>
-                  <div className="text-xs text-canopy-green font-mono">{Math.round(ev.confidence * 100)}% confidence</div>
+                  <div className="text-xs text-slate-muted uppercase tracking-wider mb-1">State Prediction</div>
+                  <div className="font-bold text-indigo-bloom">{s.final_diagnosis || 'Pending...'}</div>
+                  {s.confidence > 0 && <div className="text-xs text-canopy-green font-mono">{s.confidence}% confidence</div>}
                 </div>
               </div>
 
-              <Collapsible title={<><Database className="w-4 h-4" /> FAISS Index A (Conversations) - Top {ev.top_k_a.length}</>}>
-                {ev.top_k_a.length === 0 ? <p className="text-sm text-ash">No chunks retrieved.</p> : (
+              {chunks.length > 0 && (
+                <Collapsible title={<><Database className="w-4 h-4" /> Retrieved RAG Chunks ({chunks.length})</>}>
                   <div className="flex flex-col gap-3">
-                    {ev.top_k_a.map((chunk, j) => (
+                    {chunks.map((chunk, j) => (
                       <div key={j} className="bg-cloud-gray p-3 rounded-md text-sm">
-                        <div className="flex justify-between text-xs text-slate-muted mb-2 border-b border-frost-gray pb-2">
-                          <span>Specialty: <strong className="text-charcoal">{chunk.specialty}</strong></span>
-                        </div>
-                        <p className="text-graphite font-mono text-xs whitespace-pre-wrap">{chunk.text}</p>
+                        <p className="text-graphite font-mono text-xs whitespace-pre-wrap">{chunk}</p>
                       </div>
                     ))}
                   </div>
-                )}
-              </Collapsible>
+                </Collapsible>
+              )}
 
-              <Collapsible title={<><Database className="w-4 h-4" /> FAISS Index B (Knowledge Base) - Top {ev.top_k_b.length}</>}>
-                {ev.top_k_b.length === 0 ? <p className="text-sm text-ash">No chunks retrieved.</p> : (
-                  <div className="flex flex-col gap-3">
-                    {ev.top_k_b.map((chunk, j) => (
-                      <div key={j} className="bg-cloud-gray p-3 rounded-md text-sm">
-                        <p className="text-graphite font-mono text-xs whitespace-pre-wrap">{chunk.text}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </Collapsible>
-
-              <Collapsible title={<><Zap className="w-4 h-4" /> Final LLM Prompt & Response</>}>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <h4 className="text-xs font-bold text-slate-muted uppercase mb-2">Prompt Sent</h4>
-                    <pre className="bg-gray-900 text-green-400 p-4 rounded-md text-xs font-mono overflow-auto max-h-96 whitespace-pre-wrap">
-                      {ev.prompt}
-                    </pre>
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-slate-muted uppercase mb-2">Raw Gemini Response</h4>
-                    <pre className="bg-gray-900 text-blue-400 p-4 rounded-md text-xs font-mono overflow-auto max-h-96 whitespace-pre-wrap">
-                      {ev.raw_response}
-                    </pre>
-                  </div>
-                </div>
-              </Collapsible>
-
-              {ev.latencies && (
-                <div className="bg-slate-50 dark:bg-slate-900 border border-frost-gray dark:border-gray-700 rounded-md p-3 mt-3 flex items-center justify-between text-xs font-mono text-slate-muted transition-colors">
-                  <div className="flex gap-4">
-                    <span><strong className="text-charcoal dark:text-white">Embed:</strong> {ev.latencies.embed}ms</span>
-                    <span><strong className="text-charcoal dark:text-white">FAISS:</strong> {ev.latencies.faiss}ms</span>
-                    <span><strong className="text-charcoal dark:text-white">Gemini API:</strong> {ev.latencies.llm}ms</span>
-                  </div>
-                  <span className="text-indigo-bloom dark:text-sky-signal font-bold">Total: {ev.latencies.total}ms</span>
+              {Object.keys(lat).length > 0 && (
+                <div className="bg-slate-50 dark:bg-slate-900 border border-frost-gray dark:border-gray-700 rounded-md p-3 mt-3 flex items-center justify-start gap-6 text-xs font-mono text-slate-muted transition-colors">
+                  <Clock className="w-4 h-4 text-ash" />
+                  {Object.entries(lat).map(([k, v]) => (
+                    <span key={k}><strong className="text-charcoal dark:text-white">{k}:</strong> {v}ms</span>
+                  ))}
                 </div>
               )}
             </div>
-          ))}
+          )})}
         </div>
       </main>
     </div>
