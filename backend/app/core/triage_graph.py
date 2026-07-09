@@ -241,7 +241,7 @@ graph_builder.add_edge("classify", "explain")
 graph_builder.add_edge("explain", END)
 
 # SQLite checkpointer
-db_path = BASE_DIR.parent / "backend" / "triage_checkpoints.sqlite"
+db_path = BASE_DIR.parent.parent / "backend" / "triage_checkpoints.sqlite"
 conn = sqlite3.connect(str(db_path), check_same_thread=False)
 checkpointer = SqliteSaver(conn)
 
