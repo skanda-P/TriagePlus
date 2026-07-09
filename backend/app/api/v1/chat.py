@@ -4,8 +4,8 @@ import uuid, asyncio, json
 import sys, os
 import sqlite3
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../RAG")))
-from ml_training.gemini_inference import infer_department_interactive, infer_department_final, DEPARTMENTS, _get_rag_components, check_emergency_llm
+from ...core.triage_graph import triage_app
+from langchain_core.messages import HumanMessage
 
 router = APIRouter()
 
@@ -185,101 +185,54 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                 await websocket.send_json({"type": "typing", "content": True})
                 
                 try:
-                    gemini_res = None
-                    async for payload in infer_department_interactive(
-                        state["history"], session_id,
-                        turn_count=state["turn_count"],
-                        known_slots=state.get("slots"),
-                        patient_info={"gender": state.get("gender"), "age": state.get("age")}
-                    ):
-                        if payload["type"] == "stream_start":
-                            await websocket.send_json({"type": "stream_start"})
-                        elif payload["type"] == "stream_chunk":
-                            await websocket.send_json({"type": "stream_chunk", "content": payload["content"]})
-                        elif payload["type"] == "result":
-                            gemini_res = payload["data"]
-
-                    if not gemini_res:
-                        raise Exception("No result from inference generator")
-
-                    state["slots"] = gemini_res.get("slots", state.get("slots"))
+                    # Invoke LangGraph
+                    config = {"configurable": {"thread_id": session_id}}
                     
-                    action = gemini_res.get("action", "ask")
-                    
-                    if action == "ask":
-                        reply = gemini_res.get("reply", "")
-                        state["history"].append({"role": "assistant", "content": reply})
-                        state["fsm_state"] = "GEMINI_CONVERSATION"
-                        
-                        diag = {
-                            "type": "diagnostic",
+                    # Ensure initial state is populated
+                    if state["turn_count"] == 1:
+                        initial_state = {
+                            "age": state.get("age", 30),
+                            "gender": "M" if str(state.get("gender", "")).lower().startswith("m") else "F",
                             "session_id": session_id,
-                            "query": content,
-                            "top_k_a": gemini_res.get("top_k_a", []),
-                            "top_k_b": [],
-                            "prompt": gemini_res.get("prompt", ""),
-                            "raw_response": gemini_res.get("raw_response", ""),
-                            "department": "Interactive Turn",
-                            "confidence": 1.0,
-                            "latencies": gemini_res.get("latencies", {"embed": 0, "faiss": 0, "llm": 0, "total": 0})
+                            "patient_id": None,
+                            "present_symptoms": [],
+                            "absent_symptoms": [],
+                            "question_count": 0,
+                            "is_emergency": False,
+                            "messages": [HumanMessage(content=content)]
                         }
-                        asyncio.create_task(broadcast_diagnostic(diag))
+                        triage_app.update_state(config, initial_state)
+                    else:
+                        triage_app.update_state(config, {"messages": [HumanMessage(content=content)]})
                         
-                        await websocket.send_json({"type": "typing", "content": False, "state": "GEMINI_CONVERSATION"})
-                        
-                    elif action == "complete":
-                        summary = gemini_res.get("summary", content)
-                        
-                        dept, conf, urgency, diag = await asyncio.to_thread(
-                            infer_department_final, summary, session_id,
-                            patient_info={"gender": state.get("gender"), "age": state.get("age")}
-                        )
-                        asyncio.create_task(broadcast_diagnostic(diag))
-                        
-                        state["fsm_state"] = "RECOMMENDING"
-                        state["department"] = dept
-                        state["confidence"] = conf
-                        state["urgency_score"] = urgency
-                        
-                        confidence_pct = int(conf * 100)
-                        
-                        if urgency >= 8:
-                            color = "red"
-                        elif urgency >= 5:
-                            color = "orange"
-                        elif urgency >= 3:
-                            color = "yellow"
-                        else:
-                            color = "green"
-                            
-                        response = (
-                            f"Thank you for sharing. Based on your symptoms, I recommend seeing our **{dept}** department.\n\n"
-                            f"**Confidence:** {confidence_pct}%\n"
-                            f"**Urgency Score:** {urgency}/10\n\n"
-                            "⚠️ *This information is general in nature and does not constitute a medical diagnosis.*\n\n"
-                            "Would you like to book an appointment? Just say **'book'**."
-                        )
-                        
-                        await websocket.send_json({"type": "typing", "content": False})
-                        await websocket.send_json({
-                            "type": "message",
-                            "content": response,
-                            "state": "RECOMMENDING",
-                            "meta": {
-                                "specialty": dept,
-                                "confidence": conf,
-                                "confidence_label": f"{confidence_pct}%",
-                                "urgency": urgency,
-                                "triage_color": color,
-                            },
-                        })
-                        
+                    # Stream graph updates
+                    async for event in triage_app.astream(None, config, stream_mode="updates"):
+                        for node_name, node_state in event.items():
+                            if "messages" in node_state and node_state["messages"]:
+                                last_msg = node_state["messages"][-1].content
+                                await websocket.send_json({"type": "typing", "content": False})
+                                await websocket.send_json({"type": "message", "content": last_msg, "state": "GEMINI_CONVERSATION"})
+                                state["fsm_state"] = "GEMINI_CONVERSATION"
+                                
+                            if "triage_summary" in node_state:
+                                # We hit the end node
+                                await websocket.send_json({"type": "typing", "content": False})
+                                await websocket.send_json({
+                                    "type": "triage_complete",
+                                    "summary": node_state["triage_summary"],
+                                    "department": node_state.get("department", ""),
+                                    "final_diagnosis": node_state.get("final_diagnosis", "")
+                                })
+                                state["fsm_state"] = "RECOMMENDING"
+                                state["department"] = node_state.get("department", "")
+                                _save_session(session_id, state)
+                                break
                 except Exception as exc:
+                    logger.error(f"LangGraph failed: {exc}", exc_info=True)
                     await websocket.send_json({"type": "typing", "content": False})
-                    await websocket.send_json({
-                        "type": "error",
-                        "content": "I encountered an error analyzing your symptoms. Could you try rephrasing?",
-                    })
+                    await websocket.send_json({"type": "error", "content": "I encountered an error analyzing your symptoms. Could you try rephrasing?"})
+                    
+                _save_session(session_id, state)
 
             elif fsm == "RECOMMENDING":
                 lower = content.lower()

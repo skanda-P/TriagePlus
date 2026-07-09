@@ -6,7 +6,7 @@ load_dotenv(os.path.abspath(os.path.join(os.path.dirname(__file__), "../.env")))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .api.v1 import chat
+from .api.v1 import chat, auth
 
 app = FastAPI(title="TriagePlus API", version="1.0.0")
 
@@ -23,6 +23,7 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(auth.router, prefix="/api/v1/auth")
 app.include_router(chat.router, prefix="/api/v1")
 
 

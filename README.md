@@ -1,90 +1,41 @@
 # TriagePlus
 
-TriagePlus is an AI-powered medical triage assistant. It provides fast intake, accurate specialty guidance, and instant appointment booking, removing the wait time for patients seeking medical help.
+TriagePlus is an AI-powered medical triage platform designed to streamline hospital intakes and patient routing. It combines an intuitive React frontend, a FastAPI WebSocket backend, and a robust LangGraph state machine powered by XGBoost and a structured Medical Knowledge Graph.
 
 ## Features
 
-- **Smart Triage:** Powered by local Ollama (`llama3.2`), it accurately infers the required hospital department based on patient symptoms.
-- **Zero Wait Booking:** Bypasses phone queues to let patients book a confirmed slot instantly.
-- **Privacy-First:** Secure, local session-based interaction that doesn't persist sensitive health data inappropriately.
-- **Real-Time Chat:** WebSocket-based conversational interface for fluid communication.
+- **Interactive Triage Chat**: Real-time WebSocket streaming powered by LangGraph to gather structured symptoms from patients.
+- **Safety Mitigations**: Built-in keyword safety nets (T1 Mitigation) and confidence-flooring algorithms (T2 Mitigation) to prioritize patient safety and emergency routing.
+- **XGBoost Classifier**: A high-accuracy ML model trained on the expansive DDXPlus synthetic clinical dataset.
+- **Doctor Portal**: Secure authentication and queue viewing powered by Supabase.
 
-## Project Structure
+## Documentation
 
-- `frontend/`: React + Vite web application built with Tailwind CSS.
-- `backend/`: FastAPI application managing WebSockets, chat states, and integrations.
-- `RAG/`: Machine learning scripts, FAISS indexes, and logic for AI model interactions (including local Ollama inference).
+Detailed documentation on the technical systems can be found in the `docs/` folder:
+- [Architecture Overview](docs/architecture.md)
+- [LangGraph State Machine](docs/langgraph_architecture.md)
+- [Knowledge Bases & ML Training](docs/knowledge_and_rag.md)
 
-## Setup & Installation
+## Tech Stack
 
-### 1. Backend Setup
+- **Backend**: FastAPI, Python, SQLite (Checkpointer), LangGraph, XGBoost
+- **Frontend**: React, TailwindCSS, Vite
+- **Database / Auth**: Supabase
 
-Prerequisites: Python 3.10+
+## Setup Instructions
 
-1. Navigate to the project root and create a virtual environment (optional but recommended):
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-2. **(Optional) Enable GPU Acceleration:** If you have an NVIDIA GPU, you must install the CUDA version of PyTorch **before** installing the rest of the requirements to enable hardware acceleration. For example (for CUDA 12.1):
-   ```bash
-   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-   ```
-3. Install the remaining dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. Run Ollama locally with the LLaMA 3.2 model:
-   ```bash
-   ollama run llama3.2
-   ```
-   *(Ensure Ollama is running in the background before starting the server)*
-5. Run the FastAPI server:
-   You can either run the `run.py` script from the project root:
-   ```bash
-   python run.py
-   ```
-   Or navigate to the backend directory and use uvicorn:
-   ```bash
-   cd backend
-   uvicorn app.main:app --reload --port 8000
-   ```
+### Backend
+1. `cd backend`
+2. `pip install -r requirements.txt`
+3. Copy `.env.example` to `.env` and fill in your Supabase credentials.
+4. Run the API: `fastapi dev app/main.py`
 
-### 2. Frontend Setup
+### AI Engine (Model Training)
+1. `cd ai_engine/ml_training`
+2. `pip install xgboost scikit-learn pandas`
+3. `python train_triage_model.py` (Downloads dataset and builds the XGBoost classifier locally)
 
-Prerequisites: Node.js 18+
-
-1. Navigate to the frontend directory:
-   ```bash
-   cd frontend
-   ```
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-3. Run the development server:
-   ```bash
-   npm run dev
-   ```
-
-### 3. RAG Embeddings & Datasets
-
-Before starting the server, you need to generate the local RAG FAISS indexes (if they are not already present). 
-
-1. **Place Datasets:** Download the `en_medical_dialog.json` and `medquad.csv` files (which are too large for GitHub) and place them in the following directory:
-   `RAG/ml_training/data/`
-2. **Generate Embeddings:** Run the setup script to chunk the data and build the vector indices. Note: If you have an NVIDIA GPU, this will use CUDA automatically to speed up the process.
-   ```bash
-   python RAG/ml_training/setup_and_train.py
-   ```
-
-### Usage
-
-Once both servers are running:
-- Open the frontend at `http://localhost:5173`.
-- Enter your name to start the triage process.
-- The backend API and WebSockets are accessible at `http://localhost:8000`.
-
-## Design System
-
-The frontend follows a dedicated design system specified in `DESIGN.md`. It features a Canopy Green hero section, Coral call-to-actions, and Pastel feature cards, styled using Tailwind CSS and DM Sans.
+### Frontend
+1. `cd frontend`
+2. `npm install`
+3. `npm run dev`
