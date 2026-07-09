@@ -52,14 +52,5 @@ logs/
 *.log
 
 # FAISS Indices (if they get too large to commit, but you might want to keep small ones)
-# faiss/*.faiss
-# faiss/*.npy
-
-ai_engine/ml_training/data/en_medical_dialog.json
-ai_engine/ml_training/data/meddialog_en_train.jsonl
-ai_engine/ml_training/data/*.json
-ai_engine/ml_training/data/*.jsonl
-ai_engine/ml_training/data/**/*.csv
-ai_engine/ml_training/data/**/*.json
 ai_engine/ml_training/models/*.pkl
 ai_engine/ml_training/models/*.json
