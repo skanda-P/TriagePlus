@@ -40,3 +40,5 @@ datasets>=2.0.0
 
 # LLM
 ollama>=0.1.0
+scipy>=1.10.0
+transformers>=4.0.0

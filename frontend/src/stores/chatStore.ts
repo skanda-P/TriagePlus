@@ -33,6 +33,7 @@ interface ChatStore {
   setIsTyping:     (v: boolean) => void;
   setEmergencyClosed: (v: boolean) => void;
   clearMessages:   () => void;
+  replaceMessages: (items: Array<{ role: string; content: string }>) => void;
 }
 
 export const useChatStore = create<ChatStore>((set) => ({
@@ -65,4 +66,20 @@ export const useChatStore = create<ChatStore>((set) => ({
   setIsTyping:     (isTyping)  => set({ isTyping }),
   setEmergencyClosed: (v)      => set({ emergencyClosed: v }),
   clearMessages:   ()          => set({ messages: [], fsmState: { current: 'NAME_ENTRY' }, sessionMeta: {} }),
+  replaceMessages: (items)     => set(() => {
+    const mapped: Message[] = [];
+    for (const item of items) {
+      let role: MessageRole | null = null;
+      if (item.role === 'assistant') role = 'assistant';
+      if (item.role === 'user') role = 'patient';
+      if (!role || !item.content) continue;
+      mapped.push({
+        id: crypto.randomUUID(),
+        role,
+        content: item.content,
+        timestamp: Date.now(),
+      });
+    }
+    return { messages: mapped };
+  }),
 }));

@@ -23,5 +23,10 @@ TriagePlus is a modern medical triage assistant that uses a hybrid architecture 
    - **Condition Classification**: XGBoost predicts the pathology with an attached confidence score.
    - **Explanation**: LLM uses RAG on MedQuAD to explain the diagnosis and route to a department.
    - **Booking & Payment**: The pipeline prompts the user to book a slot, fetches available clinician slots from Supabase, processes a payment, and confirms the appointment.
-5. Live RAG and LangGraph node diagnostics are broadcasted to `/ws/diagnostics` for the Developer Monitor.
+5. Live RAG and LangGraph node diagnostics are broadcasted to `/ws/diagnostics` for the Developer Monitor (doctor-authenticated WebSocket token required).
 6. The session is closed and results are written to Supabase.
+
+## Runtime Reliability Notes
+
+- FAISS retrieval can run in degraded mode when MedDialog/MedQuAD indices are unavailable.
+- The graph now surfaces retrieval/model health in state diagnostics (`rag_status`, `model_health`) instead of failing silently.

@@ -26,6 +26,8 @@ class TriageState(TypedDict):
     payment_status: Optional[str]
     rag_chunks: Optional[List[str]]
     latencies: Optional[Dict[str, float]]
+    rag_status: Optional[Dict[str, Any]]
+    model_health: Optional[Dict[str, Any]]
 ```
 
 ## Graph Nodes
@@ -44,6 +46,8 @@ class TriageState(TypedDict):
 ## Diagnostics Event Stream
 
 Each time the LangGraph updates, the state changes are broadcasted via WebSockets to `/ws/diagnostics` for real-time monitoring of RAG chunks, latencies, and state evolution in the frontend Developer Monitor.
+
+Diagnostics websocket access is doctor-authenticated using a Supabase access token in the query string (`?token=...`).
 
 ## Checkpointing (SqliteSaver)
 

@@ -42,12 +42,19 @@ export default function RagMonitor() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const connect = () => {
+    const token = sessionStorage.getItem('doctor_token');
+    if (!token) {
+      setStatus('disconnected');
+      return;
+    }
+
     setStatus('connecting');
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
-    const wsUrl = import.meta.env.VITE_WS_BASE_URL 
+    const baseUrl = import.meta.env.VITE_WS_BASE_URL 
       ? `${import.meta.env.VITE_WS_BASE_URL}/api/v1/ws/diagnostics`
       : `${protocol}//${host}/api/v1/ws/diagnostics`;
+    const wsUrl = `${baseUrl}?token=${encodeURIComponent(token)}`;
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;

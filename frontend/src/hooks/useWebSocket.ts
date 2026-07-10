@@ -15,6 +15,7 @@ export function useWebSocket(sessionId: string) {
   const setFsmState    = useChatStore((s) => s.setFsmState);
   const setSessionMeta = useChatStore((s) => s.setSessionMeta);
   const setIsTyping    = useChatStore((s) => s.setIsTyping);
+  const replaceMessages = useChatStore((s) => s.replaceMessages);
 
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
@@ -45,7 +46,9 @@ export function useWebSocket(sessionId: string) {
             triageColor:     data.meta.triage_color,
           });
         }
-        if (data.type === 'emergency') {
+        if (data.type === 'sync_history') {
+          replaceMessages(Array.isArray(data.history) ? data.history : []);
+        } else if (data.type === 'emergency') {
           addMessage({ role: 'emergency', content: data.content });
         } else if (data.type === 'error') {
           addMessage({ role: 'error', content: data.content });
@@ -70,7 +73,7 @@ export function useWebSocket(sessionId: string) {
     };
 
     ws.onerror = () => ws.close();
-  }, [sessionId, addMessage, setFsmState, setSessionMeta, setIsTyping]);
+  }, [sessionId, addMessage, setFsmState, setSessionMeta, setIsTyping, replaceMessages]);
 
   useEffect(() => {
     mountedRef.current = true;

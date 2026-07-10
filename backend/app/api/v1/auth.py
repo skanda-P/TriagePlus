@@ -13,7 +13,7 @@ class PatientMagicLinkRequest(BaseModel):
     email: str
 
 @router.post("/doctor/login")
-async def doctor_login(request: DoctorLoginRequest):
+def doctor_login(request: DoctorLoginRequest):
     """
     Login endpoint for doctors using email and password.
     Returns the Supabase auth session (which includes the JWT access_token).
@@ -37,7 +37,7 @@ async def doctor_login(request: DoctorLoginRequest):
         raise HTTPException(status_code=401, detail=f"Login failed: {str(e)}")
 
 @router.post("/patient/magiclink")
-async def patient_magiclink(request: PatientMagicLinkRequest):
+def patient_magiclink(request: PatientMagicLinkRequest):
     """
     Endpoint for patients to request a magic link (OTP) to their email.
     """
@@ -54,7 +54,7 @@ async def patient_magiclink(request: PatientMagicLinkRequest):
         raise HTTPException(status_code=400, detail=f"Failed to send magic link: {str(e)}")
 
 @router.post("/patient/verify-otp")
-async def patient_verify_otp(email: str, token: str):
+def patient_verify_otp(email: str, token: str):
     """
     Endpoint for patients to verify the OTP they received.
     Returns the Supabase auth session.

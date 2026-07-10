@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { ArrowRight, Stethoscope, Clock, Shield, Star } from 'lucide-react';
 import { StethoscopeToggle } from '../components/shared/StethoscopeToggle';
 
@@ -28,9 +28,9 @@ export default function Landing() {
           </div>
           <div className="flex items-center gap-3">
             <StethoscopeToggle />
-            <a href="/diagnostics" className="text-xs font-mono font-bold text-indigo-bloom bg-indigo-50 px-2 py-1 rounded border border-indigo-200">Dev: RAG Monitor</a>
-            <a href="/chat" className="text-sm font-medium" style={{ color: 'var(--color-canopy-green)' }}>Patient Chat</a>
-            <a href="/doctor/login" className="btn-nav text-sm">Doctor Portal</a>
+            <Link to="/diagnostics" className="text-xs font-mono font-bold text-indigo-bloom bg-indigo-50 px-2 py-1 rounded border border-indigo-200">Dev: RAG Monitor</Link>
+            <Link to="/chat" className="text-sm font-medium" style={{ color: 'var(--color-canopy-green)' }}>Patient Chat</Link>
+            <Link to="/doctor/login" className="btn-nav text-sm">Doctor Portal</Link>
           </div>
         </div>
       </nav>
@@ -102,7 +102,7 @@ export default function Landing() {
           <p className="text-lg mb-8" style={{ color: 'var(--color-mint-wash)' }}>Join thousands of patients triaged in under 2 minutes.</p>
           <div className="flex items-center justify-center gap-4 flex-wrap">
             <button onClick={() => navigate('/chat')} className="btn-coral">Start Your Triage <ArrowRight className="w-4 h-4" /></button>
-            <a href="/doctor/login" className="btn-ghost-white">Doctor Portal</a>
+            <Link to="/doctor/login" className="btn-ghost-white">Doctor Portal</Link>
           </div>
         </div>
       </section>
