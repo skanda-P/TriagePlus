@@ -77,8 +77,8 @@ def load_ner_model():
             print("Failed to load NER model:", e)
 
 # LLM for extraction and summarization
-# Assuming Ollama is running locally with Llama3
-llm = ChatOllama(model="llama3", temperature=0)
+# Assuming Ollama is running locally with Llama3.2
+llm = ChatOllama(model="llama3.2", temperature=0)
 
 class TriageState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]

@@ -128,7 +128,7 @@ async def patient_ws(websocket: WebSocket, session_id: str):
             fsm = state.get("fsm_state", "NAME_ENTRY")
 
             # Gate emergency check to only run during symptom phases
-            if fsm in ["INITIAL_SYMPTOM", "GEMINI_CONVERSATION"]:
+            if fsm in ["INITIAL_SYMPTOM", "LLM_CONVERSATION"]:
                 if await check_emergency_llm(content):
                     await websocket.send_json({
                         "type": "emergency",
@@ -171,7 +171,7 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                     state["fsm_state"] = "INITIAL_SYMPTOM"
                     await websocket.send_json({"type": "message", "content": "Thank you. What brings you in today? Please describe your symptoms.", "state": "INITIAL_SYMPTOM"})
 
-            elif fsm in ["INITIAL_SYMPTOM", "GEMINI_CONVERSATION", "RECOMMENDING", "BOOKING"]:
+            elif fsm in ["INITIAL_SYMPTOM", "LLM_CONVERSATION", "RECOMMENDING", "BOOKING"]:
                 state["history"].append({"role": "user", "content": content})
                 state["turn_count"] = state.get("turn_count", 0) + 1
                 
@@ -212,8 +212,8 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                             if "messages" in node_state and node_state["messages"]:
                                 last_msg = node_state["messages"][-1].content
                                 await websocket.send_json({"type": "typing", "content": False})
-                                await websocket.send_json({"type": "message", "content": last_msg, "state": "GEMINI_CONVERSATION"})
-                                state["fsm_state"] = "GEMINI_CONVERSATION"
+                                await websocket.send_json({"type": "message", "content": last_msg, "state": "LLM_CONVERSATION"})
+                                state["fsm_state"] = "LLM_CONVERSATION"
                                 
                             if node_name == "process_payment" and node_state.get("payment_status") == "succeeded":
                                 await websocket.send_json({"type": "typing", "content": False})

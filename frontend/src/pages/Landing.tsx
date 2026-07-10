@@ -7,7 +7,7 @@ const PASTEL_CARDS = [
   { bg: 'var(--color-mint-wash)',  icon: <Stethoscope className="w-7 h-7" />, title: 'Smart Triage', body: 'Describe your symptoms in plain language. Our AI routes you to the right specialist — fast.' },
   { bg: 'var(--color-sky-wash)',   icon: <Clock className="w-7 h-7" />,       title: 'Zero Wait',   body: 'Book a confirmed slot in seconds. No phone calls, no hold music, no paperwork.' },
   { bg: 'var(--color-lilac-wash)', icon: <Shield className="w-7 h-7" />,      title: 'Safe & Private', body: 'Your health data stays protected. We never share your conversation or personal details.' },
-  { bg: 'var(--color-peach-wash)', icon: <Star className="w-7 h-7" />,        title: 'AI-Powered',  body: 'Powered by Gemini 2.5 Flash — the same frontier AI used in top healthcare research.' },
+  { bg: 'var(--color-peach-wash)', icon: <Star className="w-7 h-7" />,        title: 'AI-Powered',  body: 'Powered by Llama 3.2 — the same frontier AI used in top healthcare research.' },
 ];
 
 export default function Landing() {
