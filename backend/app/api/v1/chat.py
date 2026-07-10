@@ -4,8 +4,12 @@ import uuid, asyncio, json
 import sys, os
 import sqlite3
 
-from ...core.triage_graph import triage_app
+from ...core.triage_graph import triage_app, load_rag_models
 from langchain_core.messages import HumanMessage
+
+async def check_emergency_llm(content: str) -> bool:
+    emergency_keywords = ["chest pain", "heart attack", "stroke", "can't breathe", "breathing difficulty", "severe bleeding", "unconscious", "suicide", "kill myself"]
+    return any(kw in content.lower() for kw in emergency_keywords)
 
 router = APIRouter()
 
@@ -82,7 +86,7 @@ async def patient_ws(websocket: WebSocket, session_id: str):
             "slots": None,
         }
         _save_session(session_id, state)
-        asyncio.create_task(asyncio.to_thread(_get_rag_components))
+        asyncio.create_task(asyncio.to_thread(load_rag_models))
         try:
             await websocket.send_json({
                 "type": "message",
