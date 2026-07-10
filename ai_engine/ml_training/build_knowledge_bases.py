@@ -120,20 +120,53 @@ def build_medquad_index():
 def build_conversation_index():
     print("Building Conversation Aid Knowledge Base from MedDialog...")
     docs = []
-    # Using the entirety of MedDialog (no cutting/sampling) as requested
+    skipped = 0
+    total = 0
+
     with open(DATA_DIR / "meddialog_en_train.jsonl", "r", encoding="utf-8") as f:
         for i, line in enumerate(f):
+            total += 1
+            line = line.strip()
+            if not line:
+                skipped += 1
+                continue
             try:
                 data = json.loads(line)
-                # Ensure it's a valid dialogue
-                if "dialogue" in data and len(data["dialogue"]) >= 2:
-                    patient_msg = data["dialogue"][0].get("patient", "")
-                    doctor_msg = data["dialogue"][1].get("doctor", "")
-                    content = f"Patient: {patient_msg}\nDoctor: {doctor_msg}"
-                    docs.append(Document(page_content=content, metadata={"source": "meddialog", "conv_id": data.get("id", str(i))}))
-            except Exception:
-                pass
-                
+            except json.JSONDecodeError:
+                skipped += 1
+                continue
+
+            utterances = data.get("utterances", [])
+            if len(utterances) < 2:
+                skipped += 1
+                continue
+
+            # utterances are plain strings already prefixed with
+            # "Patient:" / "Doctor:" -- just join them, don't treat as dicts.
+            content = "\n".join(u.strip() for u in utterances if u and u.strip())
+
+            if not content:
+                skipped += 1
+                continue
+
+            description = data.get("description", "").strip()
+
+            docs.append(Document(
+                page_content=content,
+                metadata={
+                    "source": "meddialog",
+                    "conv_id": str(i),
+                    "description": description,
+                    "num_turns": len(utterances),
+                }
+            ))
+
+    print(f"Processed {total} lines: {len(docs)} loaded, {skipped} skipped.")
+
+    if not docs:
+        print("ERROR: No documents were loaded. Check the file structure.")
+        return
+
     print(f"Loaded {len(docs)} MedDialog conversations. Embedding...")
     embeddings = HuggingFaceEmbeddings(model_name="NeuML/pubmedbert-base-embeddings")
     vectorstore = FAISS.from_documents(docs, embeddings)
