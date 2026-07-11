@@ -54,6 +54,12 @@ export default function Landing() {
                   Start Triage <ArrowRight className="w-4 h-4" />
                 </button>
               </div>
+              <div className="mt-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800/30 rounded-lg flex items-start gap-3">
+                <span className="text-red-500 mt-0.5">⚠️</span>
+                <p className="text-sm text-red-700 dark:text-red-400 font-medium">
+                  In case of emergency - directly call &lt;placeholder&gt; number.
+                </p>
+              </div>
               <p className="mt-5 text-xs" style={{ color: 'var(--color-ash)' }}>🔒 Your data is private and never shared with third parties.</p>
             </div>
 

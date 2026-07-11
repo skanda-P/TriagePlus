@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Database, Search, ArrowRight, Zap, RefreshCw, ChevronDown, ChevronRight, Activity, Clock } from 'lucide-react';
+import { Database, Search, ArrowRight, Zap, RefreshCw, ChevronDown, ChevronRight, Activity, Clock, Lock } from 'lucide-react';
 import { buildWsUrl } from '../utils/api';
 
 interface DiagnosticEvent {
@@ -37,12 +37,15 @@ const Collapsible = ({ title, children, defaultOpen = false }: { title: React.Re
 
 export default function RagMonitor() {
   const [events, setEvents] = useState<DiagnosticEvent[]>([]);
-  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [passwordInput, setPasswordInput] = useState('');
+  
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const connect = () => {
-    const token = sessionStorage.getItem('doctor_token');
+  const connect = (pass?: string) => {
+    const token = pass || sessionStorage.getItem('developer_password');
     if (!token) {
       setStatus('disconnected');
       return;
@@ -59,8 +62,18 @@ export default function RagMonitor() {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
-    ws.onopen = () => setStatus('connected');
-    ws.onclose = () => setStatus('disconnected');
+    ws.onopen = () => {
+      setStatus('connected');
+      setIsAuthenticated(true);
+      sessionStorage.setItem('developer_password', token);
+    };
+    ws.onclose = (e) => {
+      setStatus('disconnected');
+      if (e.code === 1008) {
+        setIsAuthenticated(false);
+        sessionStorage.removeItem('developer_password');
+      }
+    };
     ws.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
@@ -77,11 +90,54 @@ export default function RagMonitor() {
   };
 
   useEffect(() => {
-    connect();
+    const savedPass = sessionStorage.getItem('developer_password');
+    if (savedPass) {
+      connect(savedPass);
+    }
     return () => {
       if (wsRef.current) wsRef.current.close();
     };
   }, []);
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (passwordInput) {
+      connect(passwordInput);
+    }
+  };
+
+  if (!isAuthenticated && status !== 'connected') {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-lavender-mist dark:bg-slate-900 transition-colors duration-300">
+        <div className="card-white dark:bg-slate-800 dark:border-gray-700 max-w-md w-full mx-4">
+          <div className="flex flex-col items-center mb-6">
+            <div className="w-12 h-12 rounded-lg flex items-center justify-center text-white mb-4" style={{ backgroundColor: 'var(--color-indigo-bloom)' }}>
+              <Lock className="w-6 h-6" />
+            </div>
+            <h1 className="text-xl font-bold text-charcoal dark:text-white">Developer Access</h1>
+            <p className="text-sm text-slate-muted text-center mt-2">Enter the developer password to view real-time diagnostics.</p>
+          </div>
+          <form onSubmit={handleLogin} className="flex flex-col gap-4">
+            <input 
+              type="password" 
+              value={passwordInput}
+              onChange={(e) => setPasswordInput(e.target.value)}
+              placeholder="Developer Password" 
+              className="input-field dark:bg-slate-900 dark:border-gray-700 dark:text-white"
+              autoFocus
+            />
+            {status === 'disconnected' && passwordInput && (
+              <p className="text-red-500 text-xs text-center">Connection failed or invalid password.</p>
+            )}
+            <button type="submit" className="btn-primary w-full flex justify-center items-center gap-2" disabled={status === 'connecting'}>
+              {status === 'connecting' ? <RefreshCw className="w-4 h-4 animate-spin" /> : 'Connect'}
+            </button>
+            <Link to="/" className="text-center text-sm text-slate-muted hover:text-charcoal mt-2">Return Home</Link>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col bg-lavender-mist dark:bg-slate-900 transition-colors duration-300">
@@ -98,7 +154,7 @@ export default function RagMonitor() {
               {status.toUpperCase()}
             </span>
             {status === 'disconnected' && (
-              <button onClick={connect} className="btn-ghost-dark !py-1.5 !px-3 text-xs gap-1"><RefreshCw className="w-3.5 h-3.5" /> Reconnect</button>
+              <button onClick={() => connect()} className="btn-ghost-dark !py-1.5 !px-3 text-xs gap-1"><RefreshCw className="w-3.5 h-3.5" /> Reconnect</button>
             )}
             <Link to="/" className="text-sm font-medium text-indigo-bloom hover:underline">Exit</Link>
           </div>

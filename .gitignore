@@ -55,3 +55,7 @@ logs/
 # We want to commit the models for easy local testing
 # ai_engine/ml_training/models/*.pkl
 # ai_engine/ml_training/models/*.json
+
+# Databases
+*.sqlite
+*.db

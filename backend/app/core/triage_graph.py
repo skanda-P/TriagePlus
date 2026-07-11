@@ -5,20 +5,20 @@ import sqlite3
 import asyncio
 import re
 import logging
-import xgboost as xgb
+import xgboost as xgb # type: ignore
 from typing import Annotated, Dict, List, Any, Optional
 from typing_extensions import TypedDict
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field # type: ignore
 
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
-from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage # type: ignore
+from langgraph.graph import StateGraph, START, END # type: ignore
+from langgraph.graph.message import add_messages # type: ignore
 
-from .knowledge_graph import KnowledgeGraph
-from .departments import get_department_for_condition
-from .db import get_supabase
-from .prompts import EMERGENCY_SCREENING_PROMPT, SLOT_EXTRACTION_PROMPT, SYMPTOM_MAPPING_PROMPT, RAG_NEXT_QUESTION_PROMPT, CLASSIFICATION_EXPLANATION_PROMPT
-from langchain_ollama import ChatOllama
+from .knowledge_graph import KnowledgeGraph # type: ignore
+from .departments import get_department_for_condition # type: ignore
+from .db import get_supabase # type: ignore
+from .prompts import EMERGENCY_SCREENING_PROMPT, SLOT_EXTRACTION_PROMPT, SYMPTOM_MAPPING_PROMPT, RAG_NEXT_QUESTION_PROMPT, CLASSIFICATION_EXPLANATION_PROMPT # type: ignore
+from langchain_ollama import ChatOllama # type: ignore
 from pathlib import Path
 
 logger = logging.getLogger("triage_graph")
@@ -38,7 +38,7 @@ _conversations_index = None
 _embeddings_model = None
 _ner_pipeline = None
 _rag_load_attempted = False
-_rag_health = {
+_rag_health: Dict[str, Any] = {
     "embeddings_loaded": False,
     "medquad_loaded": False,
     "conversations_loaded": False,
@@ -79,8 +79,8 @@ def load_rag_models() -> Dict[str, Any]:
     }
 
     try:
-        from langchain_community.vectorstores import FAISS
-        from langchain_community.embeddings import HuggingFaceEmbeddings
+        from langchain_community.vectorstores import FAISS # type: ignore
+        from langchain_community.embeddings import HuggingFaceEmbeddings # type: ignore
     except Exception as exc:
         _rag_health["issues"].append(f"RAG dependency import failed: {exc}")
         logger.error("Failed to import RAG dependencies", exc_info=True)
@@ -134,7 +134,7 @@ def load_ner_model() -> Dict[str, Any]:
         return dict(_ner_health)
 
     try:
-        from transformers import pipeline
+        from transformers import pipeline # type: ignore
         logger.info("Loading biomedical NER model d4data/biomedical-ner-all")
         _ner_pipeline = pipeline("ner", model="d4data/biomedical-ner-all", aggregation_strategy="simple")
         _ner_health = {"loaded": True, "error": None}
@@ -155,7 +155,6 @@ class TriageState(TypedDict):
     gender: str
     present_symptoms: List[str]  # List of DDXPlus E_* codes
     absent_symptoms: List[str]   # List of DDXPlus E_* codes
-    is_emergency: bool
     final_diagnosis: Optional[str]
     department: Optional[str]
     triage_summary: Optional[str]
@@ -203,31 +202,9 @@ async def node_extract_symptoms(state: TriageState) -> Dict:
         "model_health": {"ner": ner_health}
     }
 
-async def node_emergency_check(state: TriageState) -> Dict:
-    """Checks if any present symptoms map to severe conditions (severity 1 or 2)."""
-    kg = get_kg()
-    is_emerg = False
-    
-    # 1. T1 Mitigation: Keyword safety net
-    last_msg = state["messages"][-1].content.lower()
-    emergency_keywords = ["chest pain", "heart attack", "stroke", "can't breathe", "breathing difficulty", "severe bleeding", "unconscious", "suicide", "kill myself"]
-    if any(kw in last_msg for kw in emergency_keywords):
-        is_emerg = True
-        
-    # 2. DDXPlus mapping check
-    if not is_emerg:
-        for cond_id, cond_data in kg.conditions.items():
-            if cond_data.get("severity") in [1, 2]:
-                cond_symps = cond_data.get("symptoms", {})
-                if any(s in cond_symps for s in state["present_symptoms"]):
-                    is_emerg = True
-                    break
-                    
-    return {"is_emergency": is_emerg}
+
 
 def node_decide_next(state: TriageState) -> str:
-    if state.get("is_emergency"):
-        return "explain"
     if state.get("question_count", 0) >= 5 or len(state["present_symptoms"]) >= 3:
         return "classify"
     return "next_question"
@@ -289,7 +266,7 @@ async def node_next_question(state: TriageState) -> Dict:
 
 async def node_classify(state: TriageState) -> Dict:
     load_ml_models()
-    import scipy.sparse as sp
+    import scipy.sparse as sp # type: ignore
     
     # Prepare features: age, sex, and binarized symptoms
     # Sex mapping: M=1, F=0
@@ -335,53 +312,48 @@ async def node_explain(state: TriageState) -> Dict:
     latencies = state.get("latencies", {}) or {}
     rag_chunks = state.get("rag_chunks", []) or []
     
-    if state.get("is_emergency"):
-        msg = "🚨 This sounds like a medical emergency. Please visit the nearest Emergency Room or call emergency services immediately."
-        summary = "Emergency detected based on severe symptoms."
-        dept = "Emergency Medicine"
-    else:
-        rag_health = load_rag_models()
-        dept = state["department"]
-        final_diagnosis = state["final_diagnosis"]
-        
-        faiss_start = time.time()
-        # RAG Clinical Facts
-        rag_facts = ""
-        if _medquad_index is not None and final_diagnosis:
-            docs = await asyncio.to_thread(_medquad_index.similarity_search, final_diagnosis, k=3)
-            # Cap the length so it doesn't blow up the context window
-            for doc in docs:
-                chunk = doc.page_content[:300]
-                rag_facts += f"- {chunk}...\n"
-                rag_chunks.append(f"[MedQuAD]: {chunk}...")
-                
-        if not rag_facts:
-            rag_facts = "(No specific clinical facts found - rely on general knowledge)"
-        faiss_end = time.time()
-
-        symptom_text = ", ".join(state["present_symptoms"]) if state.get("present_symptoms") else "None reported"
-
-        prompt = CLASSIFICATION_EXPLANATION_PROMPT.format(
-            department=dept,
-            confidence_pct=state.get("confidence", 0.0),
-            urgency=state.get("urgency", 3),
-            symptom_summary=f"Patient reports these symptoms: {symptom_text}",
-            rag_block=rag_facts
-        )
-        
-        llm_start = time.time()
-        try:
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
-            msg = response.content
-        except Exception:
-            msg = f"Based on your symptoms, the likely condition is **{final_diagnosis}**. I recommend consulting the **{dept}** department."
-        if not rag_health.get("medquad_loaded"):
-            msg = f"{msg}\n\nNote: Clinical retrieval is currently in degraded mode (MedQuAD index unavailable)."
-        llm_end = time.time()
+    rag_health = load_rag_models()
+    dept = state["department"]
+    final_diagnosis = state["final_diagnosis"]
+    
+    faiss_start = time.time()
+    # RAG Clinical Facts
+    rag_facts = ""
+    if _medquad_index is not None and final_diagnosis:
+        docs = await asyncio.to_thread(_medquad_index.similarity_search, final_diagnosis, k=3)
+        # Cap the length so it doesn't blow up the context window
+        for doc in docs:
+            chunk = doc.page_content[:300]
+            rag_facts += f"- {chunk}...\n"
+            rag_chunks.append(f"[MedQuAD]: {chunk}...")
             
-        summary = f"Predicted {final_diagnosis}, routed to {dept}"
-        latencies["explain_faiss"] = round((faiss_end - faiss_start) * 1000, 2)
-        latencies["explain_llm"] = round((llm_end - llm_start) * 1000, 2)
+    if not rag_facts:
+        rag_facts = "(No specific clinical facts found - rely on general knowledge)"
+    faiss_end = time.time()
+
+    symptom_text = ", ".join(state["present_symptoms"]) if state.get("present_symptoms") else "None reported"
+
+    prompt = CLASSIFICATION_EXPLANATION_PROMPT.format(
+        department=dept,
+        confidence_pct=state.get("confidence", 0.0),
+        urgency=state.get("urgency", 3),
+        symptom_summary=f"Patient reports these symptoms: {symptom_text}",
+        rag_block=rag_facts
+    )
+    
+    llm_start = time.time()
+    try:
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        msg = response.content
+    except Exception:
+        msg = f"Based on your symptoms, the likely condition is **{final_diagnosis}**. I recommend consulting the **{dept}** department."
+    if not rag_health.get("medquad_loaded"):
+        msg = f"{msg}\n\nNote: Clinical retrieval is currently in degraded mode (MedQuAD index unavailable)."
+    llm_end = time.time()
+        
+    summary = f"Predicted {final_diagnosis}, routed to {dept}"
+    latencies["explain_faiss"] = round((faiss_end - faiss_start) * 1000, 2)
+    latencies["explain_llm"] = round((llm_end - llm_start) * 1000, 2)
         
     # Route to Supabase DB to store triage session
     supabase = get_supabase()
@@ -499,12 +471,15 @@ async def node_confirm_slot(state: TriageState) -> Dict:
             print("Failed to book slot:", e)
             
     msg = "Great! Your slot is held. For this consultation, the fee is $50. Please type **PAY** to confirm your appointment and process the payment."
-    return {"selected_slot_id": slot_id, "messages": [AIMessage(content=msg)]}
+    return {"selected_slot_id": slot_id, "payment_status": "pending", "messages": [AIMessage(content=msg)]}
 
 async def node_process_payment(state: TriageState) -> Dict:
+    import asyncio, uuid
     last_msg = state["messages"][-1].content.lower()
     if "pay" in last_msg:
-        msg = "✅ Payment successful! Your appointment is now fully scheduled. Thank you for using TriagePlus."
+        await asyncio.sleep(1.5)  # Simulate payment processing delay
+        intent_id = f"pi_{uuid.uuid4().hex[:20]}"
+        msg = f"✅ Payment successful! (Intent ID: {intent_id})\nYour appointment is now fully scheduled. Thank you for using TriagePlus."
         status = "succeeded"
         # In prod, we'd update appointment status to scheduled here
     else:
@@ -539,7 +514,7 @@ def route_entry(state: TriageState) -> str:
 
 graph_builder = StateGraph(TriageState)
 graph_builder.add_node("extract_symptoms", node_extract_symptoms)
-graph_builder.add_node("emergency_check", node_emergency_check)
+
 graph_builder.add_node("next_question", node_next_question)
 graph_builder.add_node("classify", node_classify)
 graph_builder.add_node("explain", node_explain)
@@ -563,9 +538,8 @@ graph_builder.set_conditional_entry_point(
 )
 
 # Triage Flow
-graph_builder.add_edge("extract_symptoms", "emergency_check")
 graph_builder.add_conditional_edges(
-    "emergency_check",
+    "extract_symptoms",
     node_decide_next,
     {
         "explain": "explain",

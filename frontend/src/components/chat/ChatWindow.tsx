@@ -82,9 +82,9 @@ export function ChatWindow({ sessionId }: { sessionId: string }) {
               <p className="text-xs text-graphite font-medium uppercase tracking-wider mb-1">Recommended</p>
               <p className="text-2xl font-bold text-canopy-green">{sessionMeta.specialty}</p>
               <div className="flex gap-4 mt-1">
-                <p className="text-sm text-graphite">Confidence: <strong>{sessionMeta.confidenceLabel ?? `${Math.round((sessionMeta.confidence ?? 0) * 100)}%`}</strong></p>
+                <p className="text-sm text-graphite">Confidence: <strong>{sessionMeta.confidenceLabel ?? `${Math.round(sessionMeta.confidence ?? 0)}%`}</strong></p>
                 {sessionMeta.urgency !== undefined && (
-                  <p className="text-sm text-graphite">Urgency: <strong>{sessionMeta.urgency}/10</strong></p>
+                  <p className="text-sm text-graphite">Urgency: <strong>{sessionMeta.urgency}/5</strong></p>
                 )}
               </div>
             </div>

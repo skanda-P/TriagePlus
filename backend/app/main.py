@@ -6,7 +6,7 @@ load_dotenv(os.path.abspath(os.path.join(os.path.dirname(__file__), "../.env")))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .api.v1 import chat, auth
+from .api.v1 import chat, auth, doctors
 
 app = FastAPI(title="TriagePlus API", version="1.0.0")
 
@@ -25,7 +25,13 @@ app.add_middleware(
 # Include routers
 app.include_router(auth.router, prefix="/api/v1/auth")
 app.include_router(chat.router, prefix="/api/v1")
+app.include_router(doctors.router, prefix="/api/v1/doctors")
 
+@app.on_event("startup")
+async def startup_event():
+    from .core.triage_graph import load_rag_models
+    import asyncio
+    asyncio.create_task(asyncio.to_thread(load_rag_models))
 
 @app.get("/api/v1/health")
 async def health():

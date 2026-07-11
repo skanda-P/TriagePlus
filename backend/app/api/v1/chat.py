@@ -5,13 +5,12 @@ import sys, os
 import sqlite3
 
 from ...core.triage_graph import graph_builder, db_path, load_rag_models
-from ...core.db import get_supabase
-from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from ...core.db import get_supabase # type: ignore
+from langchain_core.messages import HumanMessage # type: ignore
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver # type: ignore
 
-async def check_emergency_keywords(content: str) -> bool:
-    emergency_keywords = ["chest pain", "heart attack", "stroke", "can't breathe", "breathing difficulty", "severe bleeding", "unconscious", "suicide", "kill myself"]
-    return any(kw in content.lower() for kw in emergency_keywords)
+_triage_app = None
+_db_conn = None
 
 router = APIRouter()
 
@@ -33,25 +32,12 @@ async def broadcast_diagnostic(data: dict):
             except ValueError:
                 pass
 
-def _is_authorized_doctor(token: str) -> bool:
-    supabase = get_supabase()
-    if not supabase or not token:
-        return False
-    try:
-        user_response = supabase.auth.get_user(token)
-        user = user_response.user if user_response else None
-        if not user:
-            return False
-        doctor_lookup = supabase.table("doctor").select("id").eq("auth_user_id", user.id).limit(1).execute()
-        return bool(doctor_lookup.data)
-    except Exception as exc:
-        logger.error("Diagnostics auth failed: %s", exc)
-        return False
-
 @router.websocket("/ws/diagnostics")
 async def diagnostics_ws(websocket: WebSocket):
     token = websocket.query_params.get("token")
-    if not token or not await asyncio.to_thread(_is_authorized_doctor, token):
+    dev_password = os.getenv("DEVELOPER_PASSWORD")
+    
+    if not token or not dev_password or token != dev_password:
         await websocket.close(code=1008)
         return
 
@@ -108,8 +94,9 @@ async def patient_ws(websocket: WebSocket, session_id: str):
 
     await websocket.accept()
 
-    state = await _get_session(session_id)
-    is_new = state is None
+    raw_state = await _get_session(session_id)
+    is_new = raw_state is None
+    state: dict = raw_state if raw_state is not None else {}
 
     if is_new:
         state = {
@@ -119,7 +106,7 @@ async def patient_ws(websocket: WebSocket, session_id: str):
             "slots": None,
         }
         await _save_session(session_id, state)
-        asyncio.create_task(asyncio.to_thread(load_rag_models))
+
         try:
             await websocket.send_json({
                 "type": "message",
@@ -160,16 +147,7 @@ async def patient_ws(websocket: WebSocket, session_id: str):
 
             fsm = state.get("fsm_state", "NAME_ENTRY")
 
-            # Gate emergency check to only run during symptom phases
-            if fsm in ["INITIAL_SYMPTOM", "LLM_CONVERSATION"]:
-                if await check_emergency_keywords(content):
-                    await websocket.send_json({
-                        "type": "emergency",
-                        "content": "⚠️ This sounds like a medical emergency. Please call 112 immediately or go to your nearest ER.",
-                        "state": "EMERGENCY",
-                    })
-                    await websocket.close()
-                    return
+
 
             if fsm == "NAME_ENTRY":
                 if len(content) < 2 or content.isdigit():
@@ -211,54 +189,68 @@ async def patient_ws(websocket: WebSocket, session_id: str):
                 await websocket.send_json({"type": "typing", "content": True})
                 
                 try:
-                    # Initialize AsyncSqliteSaver
-                    async with AsyncSqliteSaver.from_conn_string(str(db_path)) as checkpointer:
-                        triage_app = graph_builder.compile(checkpointer=checkpointer)
+                    # Reusing a global connection and checkpointer
+                    global _triage_app, _db_conn
+                    if '_triage_app' not in globals() or _triage_app is None:
+                        import aiosqlite # type: ignore
+                        _db_conn = await aiosqlite.connect(str(db_path))
+                        checkpointer = AsyncSqliteSaver(_db_conn)
+                        _triage_app = graph_builder.compile(checkpointer=checkpointer)
+                    
+                    triage_app = _triage_app
+                    # Invoke LangGraph
+                    config = {"configurable": {"thread_id": session_id}}
+                    
+                    # Ensure initial state is populated
+                    if state["turn_count"] == 1:
+                        initial_state = {
+                            "age": state.get("age", 30),
+                            "gender": "M" if str(state.get("gender", "")).lower().startswith("m") else "F",
+                            "session_id": session_id,
+                            "patient_id": None,
+                            "present_symptoms": [],
+                            "absent_symptoms": [],
+                            "question_count": 0,
+                            "is_emergency": False,
+                            "messages": [HumanMessage(content=content)]
+                        }
+                        await triage_app.aupdate_state(config, initial_state)
+                    else:
+                        await triage_app.aupdate_state(config, {"messages": [HumanMessage(content=content)]})
                         
-                        # Invoke LangGraph
-                        config = {"configurable": {"thread_id": session_id}}
-                        
-                        # Ensure initial state is populated
-                        if state["turn_count"] == 1:
-                            initial_state = {
-                                "age": state.get("age", 30),
-                                "gender": "M" if str(state.get("gender", "")).lower().startswith("m") else "F",
-                                "session_id": session_id,
-                                "patient_id": None,
-                                "present_symptoms": [],
-                                "absent_symptoms": [],
-                                "question_count": 0,
-                                "is_emergency": False,
-                                "messages": [HumanMessage(content=content)]
+                    # Stream graph updates
+                    async for event in triage_app.astream(None, config, stream_mode="updates"):
+                        for node_name, node_state in event.items():
+                            # Send Diagnostic Event
+                            diagnostic_data = {
+                                "type": "diagnostic_update",
+                                "node": node_name,
+                                "state": {k: v for k, v in node_state.items() if k != "messages"} # Exclude full message history to save bandwidth
                             }
-                            await triage_app.aupdate_state(config, initial_state)
-                        else:
-                            await triage_app.aupdate_state(config, {"messages": [HumanMessage(content=content)]})
-                            
-                        # Stream graph updates
-                        async for event in triage_app.astream(None, config, stream_mode="updates"):
-                            for node_name, node_state in event.items():
-                                # Send Diagnostic Event
-                                diagnostic_data = {
-                                    "type": "diagnostic_update",
-                                    "node": node_name,
-                                    "state": {k: v for k, v in node_state.items() if k != "messages"} # Exclude full message history to save bandwidth
-                                }
-                                await broadcast_diagnostic(diagnostic_data)
+                            await broadcast_diagnostic(diagnostic_data)
 
-                                if "messages" in node_state and node_state["messages"]:
-                                    last_msg = node_state["messages"][-1].content
-                                    await websocket.send_json({"type": "typing", "content": False})
-                                    await websocket.send_json({"type": "message", "content": last_msg, "state": "LLM_CONVERSATION"})
-                                    state["fsm_state"] = "LLM_CONVERSATION"
-                                    state["history"].append({"role": "assistant", "content": last_msg})
+                            if "messages" in node_state and node_state["messages"]:
+                                last_msg = node_state["messages"][-1].content
+                                await websocket.send_json({"type": "typing", "content": False})
+                                
+                                payload = {"type": "message", "content": last_msg, "state": "LLM_CONVERSATION"}
+                                if node_name == "explain":
+                                    payload["meta"] = {
+                                        "specialty": node_state.get("department"),
+                                        "confidence": node_state.get("confidence"),
+                                        "urgency": node_state.get("urgency")
+                                    }
                                     
-                                if node_name == "process_payment" and node_state.get("payment_status") == "succeeded":
-                                    await websocket.send_json({"type": "typing", "content": False})
-                                    await websocket.send_json({
-                                        "type": "triage_complete",
-                                        "summary": "Appointment Booked and Paid",
-                                    })
+                                await websocket.send_json(payload)
+                                state["fsm_state"] = "LLM_CONVERSATION"
+                                state["history"].append({"role": "assistant", "content": last_msg})
+                                
+                            if node_name == "process_payment" and node_state.get("payment_status") == "succeeded":
+                                await websocket.send_json({"type": "typing", "content": False})
+                                await websocket.send_json({
+                                    "type": "triage_complete",
+                                    "summary": "Appointment Booked and Paid",
+                                })
                 except Exception as exc:
                     logger.error(f"LangGraph failed: {exc}", exc_info=True)
                     await websocket.send_json({"type": "typing", "content": False})

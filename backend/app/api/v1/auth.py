@@ -27,12 +27,14 @@ def doctor_login(request: DoctorLoginRequest):
             "email": request.email, 
             "password": request.password
         })
-        # Optionally, verify they are in the doctor table here too
-        # doctor_check = supabase.table("doctor").select("id").eq("auth_user_id", res.user.id).execute()
-        # if not doctor_check.data:
-        #     raise Exception("User is not registered as a doctor")
+        # Verify they are in the doctor table here too
+        doctor_check = supabase.table("doctor").select("id").eq("auth_user_id", res.user.id).execute()
+        if not doctor_check.data:
+            raise HTTPException(status_code=403, detail="User is not registered as a doctor")
         
         return res.session
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Login failed: {str(e)}")
 
@@ -53,8 +55,12 @@ def patient_magiclink(request: PatientMagicLinkRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to send magic link: {str(e)}")
 
+class PatientVerifyOtpRequest(BaseModel):
+    email: str
+    token: str
+
 @router.post("/patient/verify-otp")
-def patient_verify_otp(email: str, token: str):
+def patient_verify_otp(request: PatientVerifyOtpRequest):
     """
     Endpoint for patients to verify the OTP they received.
     Returns the Supabase auth session.
@@ -62,8 +68,8 @@ def patient_verify_otp(email: str, token: str):
     supabase: Client = get_supabase()
     try:
         res = supabase.auth.verify_otp({
-            "email": email,
-            "token": token,
+            "email": request.email,
+            "token": request.token,
             "type": "magiclink"
         })
         return res.session
