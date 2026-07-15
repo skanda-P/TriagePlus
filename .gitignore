@@ -19,3 +19,8 @@ env/
 # Project specific data
 backend/model/
 data/
+
+# Archives
+*.zip
+*.tar.gz
+*.rar

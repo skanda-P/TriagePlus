@@ -21,7 +21,7 @@ async def ping_task(websocket: WebSocket):
     except Exception:
         pass
 
-@router.websocket("/ws/chat/{session_id}")
+@router.websocket("/api/v1/ws/chat/{session_id}")
 async def chat_websocket(websocket: WebSocket, session_id: str):
     await websocket.accept()
     ping = asyncio.create_task(ping_task(websocket))
