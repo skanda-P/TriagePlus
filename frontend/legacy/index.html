@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TriagePlus – Welcome</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <div class="brand">
+        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        <span class="brand-name">TriagePlus</span>
+        <span class="brand-sub">Triage Plus</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="landing">
+      <h1 style="font-size:2rem; margin-bottom:1rem; color:var(--text);">Welcome to TriagePlus</h1>
+      <p style="margin-bottom:1.5rem; color:var(--text-muted);">Enter your name to start the triage chat.</p>
+      <form id="name-form" style="display:flex; flex-direction:column; gap:0.75rem; max-width:300px;">
+        <input id="user-name" type="text" placeholder="Your name" required minlength="1" style="padding:0.6rem 0.9rem; border-radius:var(--radius); border:1px solid var(--border); background:var(--surface); color:var(--text); font-family:var(--font);" />
+        <button type="submit" style="padding:0.6rem 1rem; background:var(--accent); color:#fff; border:none; border-radius:var(--radius); cursor:pointer; font-family:var(--font); transition:background var(--transition);">Start Chat</button>
+      </form>
+      <div style="margin-top:2rem; display:flex; gap:1rem;">
+        <a href="doctor_login.html" style="color:var(--accent); text-decoration:none; font-weight:500;">Doctor Portal</a>
+        <a href="rag_monitor.html" target="_blank" style="color:var(--accent); text-decoration:none; font-weight:500;">RAG Monitor</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>TriagePlus Triage Plus &middot; Powered by Llama 3.2 &middot; Demo only</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

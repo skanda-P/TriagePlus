@@ -1,0 +1,20 @@
+fastapi
+uvicorn[standard]
+supabase
+langgraph
+langgraph-checkpoint-sqlite
+websockets
+xgboost
+scikit-learn
+pandas
+numpy
+rapidfuzz
+networkx
+aiosqlite
+torch --index-url https://download.pytorch.org/whl/cu121
+faiss-cpu
+langchain
+langchain-community
+sentence-transformers
+pydantic
+pydantic-settings
