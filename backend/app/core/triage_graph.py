@@ -220,6 +220,19 @@ def node_extract_symptoms(state: TriageState) -> TriageState:
     state["present_symptoms"] = list(set(curr + new_symptoms))
     return state
 
+def ask_ollama(system_prompt: str, user_prompt: str) -> str:
+    from langchain_community.chat_models import ChatOllama
+    from langchain_core.messages import SystemMessage, HumanMessage
+    import os
+    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    try:
+        chat = ChatOllama(model="llama3.2", base_url=ollama_url, temperature=0.7)
+        res = chat.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+        return res.content.strip()
+    except Exception as e:
+        print(f"Ollama error: {e}")
+        return ""
+
 def node_next_question(state: TriageState) -> TriageState:
     kg = get_kg()
     next_symptom = kg.rank_next_questions(state["present_symptoms"], state.get("asked_symptoms", []))
@@ -227,12 +240,24 @@ def node_next_question(state: TriageState) -> TriageState:
     if next_symptom:
         state["asked_symptoms"] = state.get("asked_symptoms", []) + [next_symptom]
         
-        # Here we would normally rewrite this using ChatOllama and MedDialog RAG.
-        # But we don't have Ollama running during the build stage.
         rag = get_rag_engine()
         rag_examples = rag.query_conversations("patient symptoms", k=2)
         
-        state["messages"].append(f"QUESTION: Do you have symptom {next_symptom}?")
+        system_prompt = (
+            "You are a friendly, professional AI medical assistant. "
+            "Ask the user if they are experiencing a specific symptom. Keep it brief and conversational (1-2 sentences). "
+            "Do not give medical advice. Just ask the question."
+        )
+        user_prompt = f"The symptom to ask about is: {next_symptom}."
+        
+        if rag_examples:
+            user_prompt += f"\nHere is a good example of how to ask: '{rag_examples[0]}'"
+            
+        ollama_response = ask_ollama(system_prompt, user_prompt)
+        if ollama_response:
+            state["messages"].append(f"QUESTION: {ollama_response}")
+        else:
+            state["messages"].append(f"QUESTION: Do you have symptom {next_symptom}?")
     else:
         # Fallback to classify if we run out of symptoms to ask
         state["messages"].append("SYSTEM_FALLBACK: Proceed to classification.")
@@ -304,7 +329,22 @@ def node_explain(state: TriageState) -> TriageState:
     rag = get_rag_engine()
     rag_chunks = rag.query_medquad(state["final_diagnosis"])
     
-    explanation = f"DIAGNOSIS_EXPLANATION: Based on your symptoms, this might be {state['final_diagnosis']}."
+    system_prompt = (
+        "You are a friendly, professional AI medical assistant. "
+        "Explain to the patient that based on their symptoms, they might have a specific condition. "
+        "Keep it empathetic and reassuring (2-3 sentences). "
+        "Always clarify that this is not a definitive medical diagnosis and they should consult the doctor."
+    )
+    user_prompt = f"The condition is: {state['final_diagnosis']}."
+    
+    if rag_chunks:
+        user_prompt += f"\nHere is some medical context to help you explain it accurately: '{rag_chunks[0]}'"
+        
+    ollama_response = ask_ollama(system_prompt, user_prompt)
+    if ollama_response:
+        explanation = f"DIAGNOSIS_EXPLANATION: {ollama_response}"
+    else:
+        explanation = f"DIAGNOSIS_EXPLANATION: Based on your symptoms, this might be {state['final_diagnosis']}."
     
     supabase = get_supabase()
     try:
