@@ -80,13 +80,18 @@ class RAGQueryEngine:
             print(f"Error querying Conversations FAISS: {e}")
             return []
 
+import threading
+
 # Singleton instance
 _rag_engine = None
+_rag_lock = threading.Lock()
 
 def get_rag_engine():
     global _rag_engine
     if _rag_engine is None:
-        _rag_engine = RAGQueryEngine()
+        with _rag_lock:
+            if _rag_engine is None:
+                _rag_engine = RAGQueryEngine()
     return _rag_engine
 
 def load_rag_models():
