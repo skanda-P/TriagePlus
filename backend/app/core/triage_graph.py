@@ -224,14 +224,16 @@ def ask_ollama(system_prompt: str, user_prompt: str) -> str:
     from langchain_ollama import ChatOllama
     from langchain_core.messages import SystemMessage, HumanMessage
     import os
+    import logging
     ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     try:
+        logging.info(f"Connecting to Ollama at {ollama_url}...")
         chat = ChatOllama(model="llama3.2", base_url=ollama_url, temperature=0.7)
         res = chat.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
         return res.content.strip()
     except Exception as e:
-        print(f"Ollama error: {e}")
-        return ""
+        logging.error(f"Ollama connection error at {ollama_url}: {e}")
+        return f"OLLAMA_ERROR: {str(e)}"
 
 def node_next_question(state: TriageState) -> TriageState:
     kg = get_kg()
