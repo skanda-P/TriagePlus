@@ -58,10 +58,12 @@ async def complete_intake(session_id: str, name: str, age: int, gender: str, con
         }).execute()
         patient_id = created.data[0]["id"]
 
-    # Create chat_session
-    supabase.table("chat_session").insert({
-        "session_id": session_id, "patient_id": patient_id, "status": "in_progress"
-    }).execute()
+    # Create chat_session if it doesn't exist
+    session_check = supabase.table("chat_session").select("id").eq("session_id", session_id).execute()
+    if not session_check.data:
+        supabase.table("chat_session").insert({
+            "session_id": session_id, "patient_id": patient_id, "status": "in_progress"
+        }).execute()
 
     # Move to INITIAL_SYMPTOM
     update_fsm_session(session_id, "INITIAL_SYMPTOM", patient_id=patient_id)
