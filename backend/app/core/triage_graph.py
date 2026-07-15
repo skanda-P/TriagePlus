@@ -259,8 +259,19 @@ def node_classify(state: TriageState) -> TriageState:
             
         import scipy.sparse as sp
         evidence_matrix = mlb.transform([state["present_symptoms"]])
-        # Hardcoding age/sex for mock prediction since we don't fetch from DB here in this scaffold
-        age_sex_matrix = sp.csr_matrix([[30, 1]]) 
+        # Fetch actual patient demographics for prediction
+        supabase = get_supabase()
+        patient_res = supabase.table("patient").select("age, gender").eq("id", state["patient_id"]).execute()
+        
+        if patient_res.data:
+            age = patient_res.data[0].get("age", 30)
+            gender_str = patient_res.data[0].get("gender", "male")
+            # In DDXPlus, often F=0, M=1. We map accordingly.
+            sex = 0 if gender_str.lower() == "female" else 1
+        else:
+            age, sex = 30, 1
+            
+        age_sex_matrix = sp.csr_matrix([[age, sex]]) 
         X = sp.hstack([age_sex_matrix, evidence_matrix])
         
         probs = clf.predict_proba(X)[0]
@@ -500,4 +511,4 @@ def build_graph():
     return builder
 
 # Compile graph
-graph_builder = build_graph()
+graph_builder = build_graph().compile()
