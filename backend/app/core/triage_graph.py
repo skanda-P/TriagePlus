@@ -221,7 +221,7 @@ def node_extract_symptoms(state: TriageState) -> TriageState:
     return state
 
 def ask_ollama(system_prompt: str, user_prompt: str) -> str:
-    from langchain_community.chat_models import ChatOllama
+    from langchain_ollama import ChatOllama
     from langchain_core.messages import SystemMessage, HumanMessage
     import os
     ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
