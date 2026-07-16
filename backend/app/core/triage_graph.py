@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from ..db.supabase_client import get_supabase
 from .kg import get_kg
 from .rag import get_rag_engine
+from .unified_retrieval import get_unified_retriever
 
 # Minimal stub for HuggingFace NER since we aren't writing full ML pipelines here.
 # In a real app, this would use d4data/biomedical-ner-all
@@ -248,30 +249,49 @@ def ask_ollama(system_prompt: str, user_prompt: str) -> str:
 
 def node_next_question(state: TriageState) -> TriageState:
     kg = get_kg()
-    next_symptom = kg.rank_next_questions(state["present_symptoms"], state.get("asked_symptoms", []))
+    next_questions = kg.rank_next_questions(state["present_symptoms"], state.get("asked_symptoms", []))
     
-    if next_symptom:
-        state["asked_symptoms"] = state.get("asked_symptoms", []) + [next_symptom]
+    if next_questions and len(next_questions) > 0:
+        next_symptom_id, score = next_questions[0]  # Get top question
+        state["asked_symptoms"] = state.get("asked_symptoms", []) + [next_symptom_id]
         
-        rag = get_rag_engine()
-        rag_examples = rag.query_conversations("patient symptoms", k=2)
+        # Get unified retriever for few-shot examples from Conversations
+        retriever = get_unified_retriever()
+        
+        # Get present symptoms as context for semantic search
+        present_symptoms_text = " ".join(state.get("present_symptoms", []))
+        
+        # Retrieve top 3 few-shot examples (pre-extracted doctor turns) from Conversations
+        # based on KG-determined question and symptom context
+        few_shot_examples = retriever.get_fewshot_examples(
+            query=str(next_symptom_id),
+            symptom=present_symptoms_text,
+            num_examples=3
+        )
         
         system_prompt = (
             "You are a friendly, professional AI medical assistant. "
             "Ask the user if they are experiencing a specific symptom. Keep it brief and conversational (1-2 sentences). "
-            "Do not give medical advice. Just ask the question."
+            "Do not give medical advice. Just ask the question. "
+            "Use the examples below as reference for how similar questions are phrased by medical professionals, "
+            "but do NOT copy them directly - generate your own natural question based on the pattern."
         )
-        user_prompt = f"The symptom to ask about is: {next_symptom}."
         
-        if rag_examples:
-            user_prompt += f"\nHere is a good example of how to ask: '{rag_examples[0]}'"
+        user_prompt = f"The symptom to ask about is: {next_symptom_id}."
+        
+        # Add few-shot examples from actual doctor conversations
+        if few_shot_examples:
+            user_prompt += "\n\nHere are examples of how medical professionals ask similar questions:\n"
+            for i, example in enumerate(few_shot_examples, 1):
+                user_prompt += f"{i}. {example}\n"
+            user_prompt += "\nGenerate a similar but unique question for this symptom:"
             
         ollama_response = ask_ollama(system_prompt, user_prompt)
         if ollama_response and ollama_response.strip():
             state["messages"].append(f"QUESTION: {ollama_response}")
         else:
             # Fallback question when Ollama is not available
-            state["messages"].append(f"QUESTION: Do you have symptom {next_symptom}?")
+            state["messages"].append(f"QUESTION: Do you have symptom {next_symptom_id}?")
     else:
         # Fallback to classify if we run out of symptoms to ask
         state["messages"].append("SYSTEM_FALLBACK: Proceeding to analysis.")
