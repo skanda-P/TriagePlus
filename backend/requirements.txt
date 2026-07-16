@@ -18,3 +18,4 @@ langchain-community
 sentence-transformers
 pydantic
 pydantic-settings
+rank-bm25
