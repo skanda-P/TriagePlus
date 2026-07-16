@@ -192,4 +192,10 @@
   .dark .prose-chat em { color: #cbd5e1; }
   .prose-chat p      { margin-bottom: 8px; }
   .prose-chat p:last-child { margin-bottom: 0; }
+
+  /* Dark mode card variants */
+  .card-mint-dark { @apply dark:bg-[#1e3a2f]; }
+  .card-sky-dark { @apply dark:bg-[#0f3a45]; }
+  .card-lilac-dark { @apply dark:bg-[#2d1b3d]; }
+  .card-peach-dark { @apply dark:bg-[#3d2a25]; }
 }

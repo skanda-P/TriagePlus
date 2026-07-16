@@ -4,10 +4,10 @@ import { ArrowRight, Stethoscope, Clock, Shield, Star } from 'lucide-react';
 import { StethoscopeToggle } from '../components/shared/StethoscopeToggle';
 
 const PASTEL_CARDS = [
-  { bg: 'var(--color-mint-wash)',  icon: <Stethoscope className="w-7 h-7" />, title: 'Smart Triage', body: 'Describe your symptoms in plain language. Our AI routes you to the right specialist — fast.' },
-  { bg: 'var(--color-sky-wash)',   icon: <Clock className="w-7 h-7" />,       title: 'Zero Wait',   body: 'Book a confirmed slot in seconds. No phone calls, no hold music, no paperwork.' },
-  { bg: 'var(--color-lilac-wash)', icon: <Shield className="w-7 h-7" />,      title: 'Safe & Private', body: 'Your health data stays protected. We never share your conversation or personal details.' },
-  { bg: 'var(--color-peach-wash)', icon: <Star className="w-7 h-7" />,        title: 'AI-Powered',  body: 'Powered by Llama 3.2 — the same frontier AI used in top healthcare research.' },
+  { bg: 'var(--color-mint-wash)', darkClass: 'card-mint-dark', icon: <Stethoscope className="w-7 h-7" />, title: 'Smart Triage', body: 'Describe your symptoms in plain language. Our AI routes you to the right specialist — fast.' },
+  { bg: 'var(--color-sky-wash)', darkClass: 'card-sky-dark', icon: <Clock className="w-7 h-7" />,       title: 'Zero Wait',   body: 'Book a confirmed slot in seconds. No phone calls, no hold music, no paperwork.' },
+  { bg: 'var(--color-lilac-wash)', darkClass: 'card-lilac-dark', icon: <Shield className="w-7 h-7" />,      title: 'Safe & Private', body: 'Your health data stays protected. We never share your conversation or personal details.' },
+  { bg: 'var(--color-peach-wash)', darkClass: 'card-peach-dark', icon: <Star className="w-7 h-7" />,        title: 'AI-Powered',  body: 'Powered by Llama 3.2 — the same frontier AI used in top healthcare research.' },
 ];
 
 export default function Landing() {
@@ -92,10 +92,14 @@ export default function Landing() {
         </div>
         <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
           {PASTEL_CARDS.map((card, i) => (
-            <div key={i} className="card-pastel flex flex-col gap-4 hover:scale-[1.02] transition-transform cursor-default dark:bg-slate-800" style={{ backgroundColor: card.bg }}>
+            <div 
+              key={i} 
+              className={`card-pastel flex flex-col gap-4 hover:scale-[1.02] transition-all duration-300 cursor-default ${card.darkClass}`}
+              style={{ backgroundColor: card.bg }}
+            >
               <div className="w-12 h-12 rounded-icons flex items-center justify-center bg-canopy-green text-white dark:bg-sky-signal">{card.icon}</div>
               <h3 className="font-bold text-2xl text-canopy-green dark:text-white" style={{ letterSpacing: '-0.019em' }}>{card.title}</h3>
-              <p className="text-base text-graphite dark:text-ash leading-relaxed">{card.body}</p>
+              <p className="text-base text-graphite dark:text-slate-300 leading-relaxed">{card.body}</p>
             </div>
           ))}
         </div>
