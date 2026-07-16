@@ -221,19 +221,30 @@ def node_extract_symptoms(state: TriageState) -> TriageState:
     return state
 
 def ask_ollama(system_prompt: str, user_prompt: str) -> str:
-    from langchain_ollama import ChatOllama
-    from langchain_core.messages import SystemMessage, HumanMessage
     import os
     import logging
+    import requests
+    from urllib.parse import urljoin
+    
     ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     try:
+        # Test connection first
+        health_url = urljoin(ollama_url, "/api/tags")
+        requests.get(health_url, timeout=5)
         logging.info(f"Connecting to Ollama at {ollama_url}...")
+        
+        from langchain_ollama import ChatOllama
+        from langchain_core.messages import SystemMessage, HumanMessage
+        
         chat = ChatOllama(model="llama3.2", base_url=ollama_url, temperature=0.7)
         res = chat.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
         return res.content.strip()
+    except requests.exceptions.ConnectionError:
+        logging.warning(f"Ollama not available at {ollama_url}. Using fallback response.")
+        return None
     except Exception as e:
-        logging.error(f"Ollama connection error at {ollama_url}: {e}")
-        return f"OLLAMA_ERROR: {str(e)}"
+        logging.warning(f"Ollama error: {e}. Using fallback response.")
+        return None
 
 def node_next_question(state: TriageState) -> TriageState:
     kg = get_kg()
@@ -256,13 +267,14 @@ def node_next_question(state: TriageState) -> TriageState:
             user_prompt += f"\nHere is a good example of how to ask: '{rag_examples[0]}'"
             
         ollama_response = ask_ollama(system_prompt, user_prompt)
-        if ollama_response:
+        if ollama_response and ollama_response.strip():
             state["messages"].append(f"QUESTION: {ollama_response}")
         else:
+            # Fallback question when Ollama is not available
             state["messages"].append(f"QUESTION: Do you have symptom {next_symptom}?")
     else:
         # Fallback to classify if we run out of symptoms to ask
-        state["messages"].append("SYSTEM_FALLBACK: Proceed to classification.")
+        state["messages"].append("SYSTEM_FALLBACK: Proceeding to analysis.")
     return state
 
 def node_classify(state: TriageState) -> TriageState:
@@ -343,10 +355,10 @@ def node_explain(state: TriageState) -> TriageState:
         user_prompt += f"\nHere is some medical context to help you explain it accurately: '{rag_chunks[0]}'"
         
     ollama_response = ask_ollama(system_prompt, user_prompt)
-    if ollama_response:
+    if ollama_response and ollama_response.strip():
         explanation = f"DIAGNOSIS_EXPLANATION: {ollama_response}"
     else:
-        explanation = f"DIAGNOSIS_EXPLANATION: Based on your symptoms, this might be {state['final_diagnosis']}."
+        explanation = f"DIAGNOSIS_EXPLANATION: Based on your symptoms, this might be {state['final_diagnosis']}. Please consult with a healthcare professional for a proper diagnosis."
     
     supabase = get_supabase()
     try:

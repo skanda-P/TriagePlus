@@ -14,12 +14,20 @@ class RAGQueryEngine:
             from langchain_community.embeddings import HuggingFaceEmbeddings
             from langchain_community.vectorstores import FAISS
             
-            # Use CUDA for embedding generation as requested
-            model_kwargs = {'device': 'cuda'}
-            self.embeddings = HuggingFaceEmbeddings(
-                model_name="NeuML/pubmedbert-base-embeddings",
-                model_kwargs=model_kwargs
-            )
+            # Use CPU as fallback (CUDA may not be available in all environments)
+            try:
+                model_kwargs = {'device': 'cuda'}
+                self.embeddings = HuggingFaceEmbeddings(
+                    model_name="NeuML/pubmedbert-base-embeddings",
+                    model_kwargs=model_kwargs
+                )
+            except (RuntimeError, ImportError):
+                # Fallback to CPU if CUDA is not available
+                model_kwargs = {'device': 'cpu'}
+                self.embeddings = HuggingFaceEmbeddings(
+                    model_name="NeuML/pubmedbert-base-embeddings",
+                    model_kwargs=model_kwargs
+                )
             
             faiss_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../faiss"))
             medquad_path = os.path.join(faiss_dir, "medquad")
