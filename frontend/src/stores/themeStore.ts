@@ -9,12 +9,29 @@ interface ThemeStore {
 const getInitialTheme = () => {
   const saved = localStorage.getItem('theme');
   if (saved) return saved === 'dark';
-  return false; // Default to light mode
+  // Check system preference
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
 };
 
 // Apply initial class
 const initDark = getInitialTheme();
-if (initDark) document.documentElement.classList.add('dark');
+if (initDark) {
+  document.documentElement.classList.add('dark');
+}
+
+// Listen for system theme changes
+if (window.matchMedia) {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+    const saved = localStorage.getItem('theme');
+    if (!saved) { // Only auto-switch if user hasn't manually set preference
+      if (e.matches) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    }
+  });
+}
 
 export const useThemeStore = create<ThemeStore>((set) => ({
   isDark: initDark,

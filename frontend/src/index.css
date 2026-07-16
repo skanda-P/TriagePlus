@@ -193,9 +193,14 @@
   .prose-chat p      { margin-bottom: 8px; }
   .prose-chat p:last-child { margin-bottom: 0; }
 
-  /* Dark mode card variants */
-  .card-mint-dark { @apply dark:bg-[#1e3a2f]; }
-  .card-sky-dark { @apply dark:bg-[#0f3a45]; }
-  .card-lilac-dark { @apply dark:bg-[#2d1b3d]; }
-  .card-peach-dark { @apply dark:bg-[#3d2a25]; }
+  /* Dark mode card variants - using !important to override inline styles */
+  .card-mint-dark { @apply dark:border dark:border-[#2d5a49]; }
+  .card-sky-dark { @apply dark:border dark:border-[#1a5d7a]; }
+  .card-lilac-dark { @apply dark:border dark:border-[#4a2f5f]; }
+  .card-peach-dark { @apply dark:border dark:border-[#5f3f33]; }
+  
+  .dark .card-mint-dark { background-color: #1e3a2f !important; }
+  .dark .card-sky-dark { background-color: #0f3a45 !important; }
+  .dark .card-lilac-dark { background-color: #2d1b3d !important; }
+  .dark .card-peach-dark { background-color: #3d2a25 !important; }
 }

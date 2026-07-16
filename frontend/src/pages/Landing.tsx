@@ -83,25 +83,27 @@ export default function Landing() {
       </section>
 
       {/* Feature cards */}
-      <section className="page-container py-20">
-        <div className="text-center mb-12">
-          <p className="tag-chip bg-lavender-mist dark:bg-indigo-900 text-indigo-bloom dark:text-sky-signal mb-4">Why TriagePlus?</p>
-          <h2 className="font-bold text-charcoal dark:text-white" style={{ fontSize: '40px', letterSpacing: '-0.019em' }}>
-            Healthcare, at the speed of <span className="text-leaf-bright dark:text-emerald-400">AI</span>.
-          </h2>
-        </div>
-        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
-          {PASTEL_CARDS.map((card, i) => (
-            <div 
-              key={i} 
-              className={`card-pastel flex flex-col gap-4 hover:scale-[1.02] transition-all duration-300 cursor-default ${card.darkClass}`}
-              style={{ backgroundColor: card.bg }}
-            >
-              <div className="w-12 h-12 rounded-icons flex items-center justify-center bg-canopy-green text-white dark:bg-sky-signal">{card.icon}</div>
-              <h3 className="font-bold text-2xl text-canopy-green dark:text-white" style={{ letterSpacing: '-0.019em' }}>{card.title}</h3>
-              <p className="text-base text-graphite dark:text-slate-300 leading-relaxed">{card.body}</p>
-            </div>
-          ))}
+      <section className="w-full bg-sand dark:bg-slate-900 transition-colors duration-300">
+        <div className="page-container py-20">
+          <div className="text-center mb-12">
+            <p className="tag-chip bg-lavender-mist dark:bg-indigo-900 text-indigo-bloom dark:text-sky-signal mb-4">Why TriagePlus?</p>
+            <h2 className="font-bold text-charcoal dark:text-white" style={{ fontSize: '40px', letterSpacing: '-0.019em' }}>
+              Healthcare, at the speed of <span className="text-leaf-bright dark:text-emerald-400">AI</span>.
+            </h2>
+          </div>
+          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+            {PASTEL_CARDS.map((card, i) => (
+              <div 
+                key={i} 
+                className={`card-pastel flex flex-col gap-4 hover:scale-[1.02] transition-all duration-300 cursor-default ${card.darkClass}`}
+                style={{ backgroundColor: card.bg }}
+              >
+                <div className="w-12 h-12 rounded-icons flex items-center justify-center bg-canopy-green text-white dark:bg-sky-signal">{card.icon}</div>
+                <h3 className="font-bold text-2xl text-canopy-green dark:text-white" style={{ letterSpacing: '-0.019em' }}>{card.title}</h3>
+                <p className="text-base text-graphite dark:text-slate-300 leading-relaxed">{card.body}</p>
+              </div>
+            ))}
+          </div>
         </div>
       </section>
 
