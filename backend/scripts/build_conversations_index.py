@@ -47,7 +47,8 @@ def parse_conversation(file_path: str) -> List[Dict]:
         current_text = []
         
         for line in lines:
-            if line.strip().startswith('Doctor:'):
+            line_stripped = line.strip()
+            if line_stripped.startswith('Doctor:') or line_stripped.startswith('D:'):
                 if current_speaker == 'Patient' and current_text:
                     # We have a complete patient response, now we have a doctor message
                     patient_text = '\n'.join(current_text).strip()
@@ -58,11 +59,11 @@ def parse_conversation(file_path: str) -> List[Dict]:
                     current_text = []
                 
                 current_speaker = 'Doctor'
-                doctor_text = line.replace('Doctor:', '').strip()
+                doctor_text = line_stripped.replace('Doctor:', '').replace('D:', '').strip()
                 if doctor_text:
                     current_text.append(doctor_text)
             
-            elif line.strip().startswith('Patient:'):
+            elif line_stripped.startswith('Patient:') or line_stripped.startswith('P:'):
                 if current_speaker == 'Doctor' and current_text:
                     doctor_text = '\n'.join(current_text).strip()
                     turns.append({
@@ -72,7 +73,7 @@ def parse_conversation(file_path: str) -> List[Dict]:
                     current_text = []
                 
                 current_speaker = 'Patient'
-                patient_text = line.replace('Patient:', '').strip()
+                patient_text = line_stripped.replace('Patient:', '').replace('P:', '').strip()
                 if patient_text:
                     current_text.append(patient_text)
             
@@ -99,10 +100,10 @@ def create_turn_pairs(turns: List[Dict]) -> List[Dict]:
     i = 0
     
     while i < len(turns):
-        if i + 1 < len(turns) and turns[i]['speaker'] == 'Doctor' and turns[i+1]['speaker'] == 'Patient':
+        if i + 1 < len(turns) and turns[i]['speaker'] == 'Patient' and turns[i+1]['speaker'] == 'Doctor':
             pair = {
-                'doctor': turns[i]['text'],
-                'patient': turns[i+1]['text'],
+                'patient': turns[i]['text'],
+                'doctor': turns[i+1]['text'],
                 'index': len(pairs)
             }
             pairs.append(pair)
@@ -123,7 +124,7 @@ def create_sliding_window_chunks(turn_pairs: List[Dict], window_size: int = 3, o
         
         # Create chunk text (all doctor+patient exchanges)
         chunk_text = " ".join([
-            f"Doctor: {turn['doctor']} Patient: {turn['patient']}"
+            f"Patient: {turn['patient']} Doctor: {turn['doctor']}"
             for turn in chunk_turns
         ])
         
