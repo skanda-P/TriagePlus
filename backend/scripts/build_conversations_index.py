@@ -201,7 +201,7 @@ def build_faiss_index(chunks: List[Dict], model: SentenceTransformer) -> Tuple[f
     
     # Create FAISS index
     dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
+    index = faiss.IndexIDMap(faiss.IndexFlatL2(dimension))
     ids = np.arange(len(chunks), dtype=np.int64)
     index.add_with_ids(embeddings, ids)
     

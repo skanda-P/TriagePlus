@@ -65,32 +65,18 @@ class MedDialogIndexBuilder:
         for conv_idx, conversation in enumerate(self.conversations):
             if not isinstance(conversation, dict):
                 continue
-            
-            turns = conversation.get('turns', [])
-            if not turns:
-                continue
-            
-            patient_description = ""
-            
-            for turn_idx, turn in enumerate(turns):
-                speaker = turn.get('speaker', '').lower()
-                content = turn.get('content', '').strip()
                 
-                if not content:
-                    continue
-                
-                if speaker == 'patient':
-                    patient_description = content
-                elif speaker == 'doctor':
-                    # Extract doctor's question/response
-                    if patient_description:  # Only if we have patient context
-                        self.doctor_questions.append({
-                            'patient_symptom': patient_description,
-                            'doctor_response': content,
-                            'turn_index': turn_idx,
-                            'conversation_id': conv_idx,
-                            'source': 'meddialog'
-                        })
+            patient_description = conversation.get('Description', '').strip()
+            doctor_response = conversation.get('Doctor', '').strip()
+            
+            if patient_description and doctor_response:
+                self.doctor_questions.append({
+                    'patient_symptom': patient_description,
+                    'doctor_response': doctor_response,
+                    'turn_index': 0,
+                    'conversation_id': conversation.get('id', conv_idx),
+                    'source': 'meddialog'
+                })
         
         logger.info(f"Extracted {len(self.doctor_questions)} doctor question templates")
     
