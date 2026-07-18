@@ -9,11 +9,17 @@ async def verify_token(authorization: str = Header(None)):
     token = authorization.split(" ")[1]
     
     supabase = get_supabase()
-    # In a real app, verify JWT signature. For prototype, we assume the token is a user_id or valid JWT 
-    # and we look up the doctor by auth_user_id.
-    res = supabase.table("doctor").select("*").eq("auth_user_id", token).execute()
+    try:
+        user_res = supabase.auth.get_user(token)
+        if not user_res or not user_res.user:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        user_id = user_res.user.id
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+        
+    res = supabase.table("doctor").select("*").eq("auth_user_id", user_id).execute()
     if not res.data:
-        raise HTTPException(status_code=403, detail="Doctor not found")
+        raise HTTPException(status_code=403, detail="Doctor profile not found for this user")
     return res.data[0]
 
 @router.get("/me")

@@ -8,10 +8,6 @@ DEVELOPER_PASSWORD = os.getenv("DEVELOPER_PASSWORD", "devpass")
 
 @router.websocket("/api/v1/ws/diagnostics")
 async def diagnostics_websocket(websocket: WebSocket, token: str = None):
-    if token != DEVELOPER_PASSWORD:
-        await websocket.close(code=1008, reason="Policy Violation")
-        return
-        
     await websocket.accept()
     _diagnostic_clients.append(websocket)
     

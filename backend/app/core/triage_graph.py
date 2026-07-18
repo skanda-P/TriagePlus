@@ -63,6 +63,8 @@ class TriageState(TypedDict):
     selected_slot_id: Optional[str]
     final_diagnosis: Optional[str]
     asked_symptoms: List[str]
+    rag_chunks: Optional[List[str]]
+    latencies: Optional[dict]
 
 # --- Nodes ---
 
@@ -261,6 +263,8 @@ def node_next_question(state: TriageState) -> TriageState:
         # Get present symptoms as context for semantic search
         present_symptoms_text = " ".join(state.get("present_symptoms", []))
         
+        import time
+        t0 = time.time()
         # Retrieve top 3 few-shot examples (pre-extracted doctor turns) from Conversations
         # based on KG-determined question and symptom context
         few_shot_examples = retriever.get_fewshot_examples(
@@ -268,6 +272,8 @@ def node_next_question(state: TriageState) -> TriageState:
             symptom=present_symptoms_text,
             num_examples=3
         )
+        t_rag = int((time.time() - t0) * 1000)
+        state["rag_chunks"] = few_shot_examples
         
         system_prompt = (
             "You are a friendly, professional AI medical assistant. "
@@ -286,7 +292,12 @@ def node_next_question(state: TriageState) -> TriageState:
                 user_prompt += f"{i}. {example}\n"
             user_prompt += "\nGenerate a similar but unique question for this symptom:"
             
+        t0_llm = time.time()
         ollama_response = ask_ollama(system_prompt, user_prompt)
+        t_llm = int((time.time() - t0_llm) * 1000)
+        
+        state["latencies"] = {"RAG Retrieval": t_rag, "LLM Generation": t_llm}
+        
         if ollama_response and ollama_response.strip():
             state["messages"].append(f"QUESTION: {ollama_response}")
         else:
@@ -360,8 +371,12 @@ def node_classify(state: TriageState) -> TriageState:
     return state
 
 def node_explain(state: TriageState) -> TriageState:
+    import time
+    t0 = time.time()
     rag = get_rag_engine()
     rag_chunks = rag.query_medquad(state["final_diagnosis"])
+    t_rag = int((time.time() - t0) * 1000)
+    state["rag_chunks"] = rag_chunks
     
     system_prompt = (
         "You are a friendly, professional AI medical assistant. "
@@ -374,7 +389,12 @@ def node_explain(state: TriageState) -> TriageState:
     if rag_chunks:
         user_prompt += f"\nHere is some medical context to help you explain it accurately: '{rag_chunks[0]}'"
         
+    t0_llm = time.time()
     ollama_response = ask_ollama(system_prompt, user_prompt)
+    t_llm = int((time.time() - t0_llm) * 1000)
+    
+    state["latencies"] = {"MedQuAD RAG": t_rag, "LLM Generation": t_llm}
+    
     if ollama_response and ollama_response.strip():
         explanation = f"DIAGNOSIS_EXPLANATION: {ollama_response}"
     else:

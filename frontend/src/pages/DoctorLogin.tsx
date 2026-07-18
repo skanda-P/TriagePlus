@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LogIn, Stethoscope } from 'lucide-react';
 
+import { supabase } from '../utils/supabase';
+
 export default function DoctorLogin() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -12,19 +14,20 @@ export default function DoctorLogin() {
     e.preventDefault();
     setError('');
     try {
-      const res = await fetch('/api/v1/auth/doctor/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+      const { data, error: authError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setError(data.detail ?? 'Invalid credentials.');
+      
+      if (authError) {
+        setError(authError.message);
         return;
       }
-      const data = await res.json();
-      sessionStorage.setItem('doctor_token', data.access_token);
-      navigate('/doctor/dashboard');
+      
+      if (data.session) {
+        sessionStorage.setItem('doctor_token', data.session.access_token);
+        navigate('/doctor/dashboard');
+      }
     } catch {
       setError('Could not connect to the server.');
     }
