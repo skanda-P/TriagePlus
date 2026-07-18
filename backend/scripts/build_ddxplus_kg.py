@@ -13,6 +13,7 @@ from collections import defaultdict, Counter
 from typing import Dict, List, Tuple, Set
 import networkx as nx
 import logging
+import ast
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,9 +23,9 @@ class DDXPlusKGBuilder:
     
     def __init__(self, data_dir: str = "backend/data"):
         self.data_dir = data_dir
-        self.conditions_file = os.path.join(data_dir, "ddxplus_conditions.json")
-        self.evidences_file = os.path.join(data_dir, "ddxplus_evidences.json")
-        self.eval_set_file = os.path.join(data_dir, "ddxplus_eval_set.json")
+        self.conditions_file = os.path.join(data_dir, "DDXPlus", "release_conditions.json")
+        self.evidences_file = os.path.join(data_dir, "DDXPlus", "release_evidences.json")
+        self.eval_set_file = os.path.join(data_dir, "DDXPlus", "eval_set.json")
         
         self.conditions = {}
         self.evidences = {}
@@ -59,7 +60,7 @@ class DDXPlusKGBuilder:
             self.graph.add_node(
                 cond_id,
                 node_type='condition',
-                name=cond_data.get('name', ''),
+                name=cond_data.get('condition_name', ''),
                 prevalence=cond_data.get('prevalence', 0)
             )
         
@@ -68,7 +69,7 @@ class DDXPlusKGBuilder:
             self.graph.add_node(
                 ev_id,
                 node_type='evidence',
-                name=ev_data.get('name', ''),
+                name=ev_data.get('question_en', ev_data.get('name', '')),
                 icd_code=ev_data.get('icd_code', '')
             )
         
@@ -77,9 +78,13 @@ class DDXPlusKGBuilder:
         edge_count = 0
         
         for case in self.eval_cases:
-            condition_id = str(case['condition_id'])
-            present_evidences = case['present_evidences']
-            absent_evidences = case['absent_evidences']
+            condition_id = str(case.get('PATHOLOGY', ''))
+            if not condition_id: continue
+            try:
+                present_evidences = ast.literal_eval(case.get('EVIDENCES', '[]'))
+            except:
+                present_evidences = []
+            absent_evidences = []
             
             # Present evidences: strong connection
             for ev_id in present_evidences:

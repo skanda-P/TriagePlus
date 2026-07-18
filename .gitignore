@@ -19,6 +19,14 @@ env/
 # Project specific data
 backend/model/
 data/
+backend/data/
+
+# Embeddings, indices, and serialized objects
+*.pkl
+*.index
+*embeddings*
+*.npy
+*.npz
 
 # Archives
 *.zip

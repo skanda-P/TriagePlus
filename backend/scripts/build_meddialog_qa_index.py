@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # Directories
 DATA_DIR = Path(__file__).parent.parent.parent / "backend" / "data"
-MEDDIALOG_FILE = DATA_DIR / "meddialog.json"
+MEDDIALOG_FILE = DATA_DIR / "en_medical_dialog.json"
 FAISS_DIR = DATA_DIR / "faiss" / "meddialog"
 METADATA_FILE = FAISS_DIR / "meddialog_metadata.pkl"
 

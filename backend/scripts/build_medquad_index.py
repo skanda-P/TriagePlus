@@ -134,7 +134,7 @@ def load_medquad_csv(csv_path: str) -> List[Dict]:
     return chunks
 
 
-def build_faiss_index(chunks: List[Dict], model_name: str = "microsoft/BiomedNLP-PubMedBERT-base-uncased"):
+def build_faiss_index(chunks: List[Dict], model_name: str = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract"):
     """Build FAISS index with embeddings and metadata."""
     from langchain_community.embeddings import HuggingFaceEmbeddings
     from langchain_community.vectorstores import FAISS
@@ -188,7 +188,7 @@ def save_index_metadata(chunks: List[Dict], output_dir: str):
     """Save metadata about the index for validation."""
     metadata = {
         'total_chunks': len(chunks),
-        'embedding_model': 'microsoft/BiomedNLP-PubMedBERT-base-uncased',
+        'embedding_model': 'microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract',
         'embedding_dim': 768,
         'chunking_strategy': 'atomic_qa_pairs_with_paragraph_splitting',
         'question_types': list(set(c['question_type'] for c in chunks)),

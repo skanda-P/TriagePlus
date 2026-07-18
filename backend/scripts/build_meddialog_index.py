@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 class MedDialogIndexBuilder:
     """Build retrieval index from MedDialog conversations"""
     
-    def __init__(self, data_dir: str = "backend/data", model_name: str = "microsoft/BiomedNLP-PubMedBERT-base"):
+    def __init__(self, data_dir: str = "backend/data", model_name: str = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract"):
         self.data_dir = data_dir
-        self.meddialog_file = os.path.join(data_dir, "meddialog_conversations.json")
+        self.meddialog_file = os.path.join(data_dir, "en_medical_dialog.json")
         self.index_dir = os.path.join(data_dir, "meddialog_index")
         
         self.model = SentenceTransformer(model_name)
