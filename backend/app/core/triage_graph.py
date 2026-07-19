@@ -4,6 +4,7 @@ import asyncio
 from typing import TypedDict, Annotated, List, Optional
 from datetime import datetime
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import BaseModel, Field
 
 from ..db.supabase_client import get_supabase
@@ -121,23 +122,20 @@ def fuzzy_match_department(text: str, synonyms: dict, threshold: int = 85) -> st
         pass
     return None
 
-def fuzzy_match_doctor(text: str, threshold: int = 85):
-    try:
-        from rapidfuzz import process, fuzz
-        supabase = get_supabase()
-        res = supabase.table("doctor").select("id, name, specialty_id").execute()
-        if not res.data: return None
-        
-        doctor_names = [r["name"] for r in res.data]
-        match = process.extractOne(text, doctor_names, scorer=fuzz.WRatio)
-        if match and match[1] >= threshold:
-            matched_doc = next(d for d in res.data if d["name"] == match[0])
-            spec_res = supabase.table("specialty").select("name").eq("id", matched_doc["specialty_id"]).execute()
-            if spec_res.data:
-                return {"id": matched_doc["id"], "name": matched_doc["name"], "specialty_name": spec_res.data[0]["name"]}
-    except:
-        pass
-    return None
+def route_after_intent(state: TriageState):
+    """Route after intent detection based on the detected intent"""
+    intent = state.get("intent")
+    
+    if intent == "direct_booking_doctor":
+        return "node_fetch_slots_for_doctor"
+    elif intent == "direct_booking_department":
+        if state.get("department"):
+            return "node_fetch_slots"
+        else:
+            return "node_prompt_department_choice"
+    elif intent == "symptom_triage":
+        return "node_extract_symptoms"
+    return END
 
 def node_detect_intent(state: TriageState) -> TriageState:
     text = state["messages"][-1].lower()
@@ -579,7 +577,17 @@ def build_graph():
         }
     )
     
-    builder.add_edge("node_detect_intent", END)
+    builder.add_conditional_edges(
+        "node_detect_intent",
+        route_after_intent,
+        {
+            "node_fetch_slots_for_doctor": "node_fetch_slots_for_doctor",
+            "node_prompt_department_choice": "node_prompt_department_choice",
+            "node_fetch_slots": "node_fetch_slots",
+            "node_extract_symptoms": "node_extract_symptoms",
+        }
+    )
+    
     builder.add_edge("node_prompt_department_choice", END)
     builder.add_edge("node_fetch_slots_for_doctor", END)
     builder.add_edge("node_fetch_slots", END)
@@ -604,5 +612,6 @@ def build_graph():
     
     return builder
 
-# Compile graph
-graph_builder = build_graph().compile()
+# Compile graph with SQLite checkpointer for session persistence
+checkpointer = SqliteSaver.from_conn_string("sqlite:///checkpoints.db")
+graph_builder = build_graph().compile(checkpointer=checkpointer)

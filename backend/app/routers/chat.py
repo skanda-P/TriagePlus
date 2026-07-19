@@ -116,30 +116,15 @@ async def chat_websocket(websocket: WebSocket, session_id: str):
                     
                 await websocket.send_text(json.dumps({"type": "typing"}))
                 
-                # Invoke LangGraph
+                # Invoke LangGraph - checkpointer restores persisted state on subsequent messages
                 config = {"configurable": {"thread_id": session_id}}
                 
-                # We need to construct the input state for the graph
+                # Provide required fields for first message; checkpointer merges with persisted state on subsequent messages
                 input_state = {
                     "session_id": session_id,
                     "patient_id": state["patient_id"],
                     "messages": [msg],
-                    "present_symptoms": [],
-                    "confidence": None,
-                    "triage_level": None,
-                    "department": None,
-                    "payment_status": None,
                     "is_emergency": False,
-                    "intent": None,
-                    "requested_department_raw": None,
-                    "requested_doctor_raw": None,
-                    "selected_doctor_id": None,
-                    "awaiting_department_choice": False,
-                    "booking_intent": None,
-                    "available_slots": None,
-                    "selected_slot_id": None,
-                    "final_diagnosis": None,
-                    "asked_symptoms": [],
                 }
                 
                 try:

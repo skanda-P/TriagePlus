@@ -15,9 +15,8 @@ import sys
 
 # Setup paths
 BACKEND_DIR = Path(__file__).parent.parent
-PROJECT_DIR = BACKEND_DIR.parent.parent
 DATA_DIR = BACKEND_DIR / "data"
-FAISS_DIR = PROJECT_DIR / "faiss"
+FAISS_DIR = DATA_DIR / "faiss"
 MODEL_DIR = BACKEND_DIR / "models"
 
 os.makedirs(FAISS_DIR, exist_ok=True)

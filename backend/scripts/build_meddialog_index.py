@@ -18,10 +18,11 @@ logger = logging.getLogger(__name__)
 class MedDialogIndexBuilder:
     """Build retrieval index from MedDialog conversations"""
     
-    def __init__(self, data_dir: str = "backend/data", model_name: str = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract"):
-        self.data_dir = data_dir
-        self.meddialog_file = os.path.join(data_dir, "en_medical_dialog.json")
-        self.index_dir = os.path.join(data_dir, "meddialog_index")
+    def __init__(self, data_dir: str = "data", model_name: str = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract"):
+        backend_dir = Path(__file__).parent.parent
+        self.data_dir = backend_dir / data_dir
+        self.meddialog_file = self.data_dir / "en_medical_dialog.json"
+        self.index_dir = self.data_dir / "faiss" / "meddialog"
         
         self.model = SentenceTransformer(model_name)
         self.embedding_dim = 768
@@ -151,10 +152,10 @@ class MedDialogIndexBuilder:
         """Save index and metadata"""
         logger.info(f"Saving index to {self.index_dir}")
         
-        os.makedirs(self.index_dir, exist_ok=True)
+        self.index_dir.mkdir(parents=True, exist_ok=True)
         
         # Save FAISS index
-        faiss.write_index(self.index, os.path.join(self.index_dir, "meddialog.index"))
+        faiss.write_index(self.index, str(self.index_dir / "meddialog.index"))
         
         # Save metadata
         metadata = {
@@ -164,7 +165,7 @@ class MedDialogIndexBuilder:
             'questions': self.doctor_questions
         }
         
-        with open(os.path.join(self.index_dir, "metadata.json"), 'w') as f:
+        with open(self.index_dir / "metadata.json", 'w') as f:
             json.dump(metadata, f, indent=2)
         
         logger.info("Index saved successfully")

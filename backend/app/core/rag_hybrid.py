@@ -46,7 +46,7 @@ class HybridRAGEngine:
             logger.info(f"Embedding dimension: {embedding_dim}")
             
             # Load MedQuAD index
-            faiss_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../faiss"))
+            faiss_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../data/faiss"))
             medquad_path = os.path.join(faiss_dir, "medquad")
             
             if os.path.exists(medquad_path):

@@ -22,10 +22,11 @@ class DDXPlusKGBuilder:
     """Build knowledge graph from DDXPlus dataset"""
     
     def __init__(self, data_dir: str = "backend/data"):
-        self.data_dir = data_dir
-        self.conditions_file = os.path.join(data_dir, "DDXPlus", "release_conditions.json")
-        self.evidences_file = os.path.join(data_dir, "DDXPlus", "release_evidences.json")
-        self.eval_set_file = os.path.join(data_dir, "DDXPlus", "eval_set.json")
+        backend_dir = Path(__file__).parent.parent
+        self.data_dir = backend_dir / data_dir
+        self.conditions_file = self.data_dir / "DDXPlus" / "release_conditions.json"
+        self.evidences_file = self.data_dir / "DDXPlus" / "release_evidences.json"
+        self.eval_set_file = self.data_dir / "DDXPlus" / "eval_set.json"
         
         self.conditions = {}
         self.evidences = {}
@@ -192,7 +193,9 @@ class DDXPlusKGBuilder:
     
     def save_graph(self, output_path: str = "backend/data/ddxplus_kg.pkl"):
         """Save graph and metadata to pickle"""
-        logger.info(f"Saving knowledge graph to {output_path}")
+        backend_dir = Path(__file__).parent.parent
+        full_path = backend_dir / output_path
+        logger.info(f"Saving knowledge graph to {full_path}")
         
         kg_data = {
             'graph': self.graph,
@@ -202,8 +205,8 @@ class DDXPlusKGBuilder:
             'condition_evidence_counts': self.condition_evidence_counts,
         }
         
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, 'wb') as f:
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(full_path, 'wb') as f:
             pickle.dump(kg_data, f)
         
         logger.info(f"Graph saved: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")

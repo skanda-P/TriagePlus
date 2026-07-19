@@ -29,7 +29,8 @@ class RAGQueryEngine:
                     model_kwargs=model_kwargs
                 )
             
-            faiss_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../faiss"))
+            # FAISS indices in backend/data/faiss/
+            faiss_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../data/faiss"))
             medquad_path = os.path.join(faiss_dir, "medquad")
             conversations_path = os.path.join(faiss_dir, "conversations")
             

@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Directories
-DATA_DIR = Path(__file__).parent.parent.parent.parent / "backend" / "data"
+DATA_DIR = Path(__file__).parent.parent.parent / "data"
 FAISS_DIR = DATA_DIR / "faiss"
 
 # Model
