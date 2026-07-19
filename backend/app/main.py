@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from .routers import chat, doctor, public, diagnostics
+from .routers import chat, doctor, public
 from .db.supabase_client import get_supabase
 from .core.rag import load_rag_models
 
@@ -20,14 +20,16 @@ async def release_stale_holds_task():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Warm up models
-    import threading
-    threading.Thread(target=load_rag_models, daemon=True).start()
+    # Warm up models in background task (non-blocking)
+    import asyncio
+    warmup_task = asyncio.create_task(asyncio.to_thread(load_rag_models))
     
     # Stale hold reaper
     reaper = asyncio.create_task(release_stale_holds_task())
     
     yield
+    
+    warmup_task.cancel()
     reaper.cancel()
 
 app = FastAPI(lifespan=lifespan)
@@ -43,7 +45,6 @@ app.add_middleware(
 )
 
 app.include_router(chat.router)
-app.include_router(diagnostics.router)
 app.include_router(doctor.router)
 app.include_router(public.router)
 

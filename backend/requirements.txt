@@ -19,3 +19,5 @@ sentence-transformers
 pydantic
 pydantic-settings
 rank-bm25
+transformers>=4.30.0
+accelerate>=0.20.0

@@ -11,6 +11,43 @@ router = APIRouter()
 # Global list of diagnostic clients
 _diagnostic_clients = []
 
+
+@router.websocket("/api/v1/ws/diagnostics")
+async def diagnostics_websocket(websocket: WebSocket):
+    """WebSocket endpoint for diagnostic dashboard to receive real-time graph updates."""
+    await websocket.accept()
+    
+    # Add to diagnostic clients list
+    _diagnostic_clients.append(websocket)
+    try:
+        # Send initial connection confirmation
+        await websocket.send_text(json.dumps({
+            "type": "connected",
+            "message": "Diagnostics connected"
+        }))
+        
+        # Keep connection alive, handle incoming messages (ping/pong)
+        while True:
+            try:
+                data = await websocket.receive_text()
+                # Handle pong or other messages if needed
+                payload = json.loads(data)
+                if payload.get("type") == "ping":
+                    await websocket.send_text(json.dumps({"type": "pong"}))
+            except json.JSONDecodeError:
+                pass
+            except Exception:
+                break
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        print(f"Diagnostics WS error: {e}")
+    finally:
+        # Remove from diagnostic clients list
+        if websocket in _diagnostic_clients:
+            _diagnostic_clients.remove(websocket)
+
+
 async def ping_task(websocket: WebSocket):
     try:
         while True:

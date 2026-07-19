@@ -9,9 +9,11 @@ Build FAISS indices for MedQuAD with proper chunking strategy.
 import os
 import csv
 import json
+import pickle
 from typing import List, Dict, Tuple
 from pathlib import Path
 import sys
+from rank_bm25 import BM25Okapi
 
 # Setup paths
 BACKEND_DIR = Path(__file__).parent.parent
@@ -237,13 +239,34 @@ def main():
     print(f"Saving index to {medquad_index_dir}...")
     index.save_local(str(medquad_index_dir))
     
-    # Save metadata
+    # Save metadata (for unified_retrieval)
+    metadata = {
+        'chunks': chunks,
+        'total_chunks': len(chunks),
+        'embedding_model': 'microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract',
+        'dimension': 768,
+    }
+    metadata_path = medquad_index_dir / "medquad_metadata.pkl"
+    with open(metadata_path, 'wb') as f:
+        pickle.dump(metadata, f)
+    print(f"Saved metadata to {metadata_path}")
+    
+    # Build and save BM25 index
+    print("Building BM25 index...")
+    texts = [c.get('answer_chunk', c.get('answer', '')) for c in chunks]
+    tokenized = [t.lower().split() for t in texts]
+    bm25 = BM25Okapi(tokenized)
+    bm25_path = medquad_index_dir / "medquad_bm25.pkl"
+    with open(bm25_path, 'wb') as f:
+        pickle.dump(bm25, f)
+    print(f"Saved BM25 index to {bm25_path}")
+    
+    # Save metadata.json for validation
     save_index_metadata(chunks, str(medquad_index_dir))
     
     print("\n" + "=" * 80)
     print("MedQuAD index built successfully!")
     print("=" * 80)
-
 
 if __name__ == "__main__":
     main()

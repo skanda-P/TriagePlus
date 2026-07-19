@@ -1,11 +1,15 @@
 """
-Improved Named Entity Recognition for symptom extraction.
-Uses pattern-based matching + contextual extraction rather than just keyword lists.
+Biomedical Named Entity Recognition for symptom extraction.
+Uses d4data/biomedical-ner-all HuggingFace model with regex fallback.
+Extracts Sign_symptom, Disease_disorder, Detailed_description entities
+and maps them to DDXPlus evidence codes (E_XX).
 """
 
 import re
 import logging
-from typing import List, Dict, Tuple
+import json
+import os
+from typing import List, Dict, Set
 from enum import Enum
 
 logger = logging.getLogger(__name__)
@@ -18,6 +22,138 @@ class SymptomSeverity(Enum):
     SEVERE = 3
 
 
+class BiomedicalNER:
+    """HuggingFace Biomedical NER pipeline for symptom extraction."""
+    
+    def __init__(self):
+        self.ner_pipeline = None
+        self.evidence_to_code = self._load_ddxplus_evidence_mapping()
+        self._load_model()
+    
+    def _load_model(self):
+        """Load HF NER pipeline with GPU/CPU fallback."""
+        try:
+            import torch
+            from transformers import pipeline, AutoTokenizer, AutoModelForTokenClassification
+            
+            device = 0 if torch.cuda.is_available() else -1
+            logger.info(f"Loading biomedical NER model on device: {'cuda' if device == 0 else 'cpu'}")
+            
+            self.ner_pipeline = pipeline(
+                "ner",
+                model="d4data/biomedical-ner-all",
+                tokenizer="d4data/biomedical-ner-all",
+                aggregation_strategy="simple",
+                device=device
+            )
+            logger.info("HF Biomedical NER model loaded successfully")
+        except Exception as e:
+            logger.warning(f"HF NER load failed: {e}, falling back to regex")
+            self.ner_pipeline = None
+    
+    def _load_ddxplus_evidence_mapping(self) -> Dict[str, str]:
+        """Load DDXPlus evidence name to code mapping (E_XX)."""
+        mapping = {}
+        try:
+            kg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../data/ddxplus_evidences.json"))
+            if os.path.exists(kg_path):
+                with open(kg_path, 'r') as f:
+                    evidences = json.load(f)
+                for code, info in evidences.items():
+                    name = info.get("name", "").lower()
+                    if name:
+                        mapping[name] = code
+                        # Also map variations
+                        mapping[name.replace("_", " ")] = code
+                        mapping[name.replace("-", " ")] = code
+            logger.info(f"Loaded {len(mapping)} evidence name mappings")
+        except Exception as e:
+            logger.warning(f"Could not load evidence mapping: {e}")
+        return mapping
+    
+    def _map_to_evidence_codes(self, entities: List[Dict]) -> List[str]:
+        """Map extracted entities to DDXPlus evidence codes."""
+        codes = []
+        for entity in entities:
+            entity_text = entity.get('word', '').lower().strip()
+            entity_group = entity.get('entity_group', '')
+            
+            if entity_group in ['Sign_symptom', 'Disease_disorder', 'Detailed_description']:
+                # Try exact match first
+                if entity_text in self.evidence_to_code:
+                    codes.append(self.evidence_to_code[entity_text])
+                else:
+                    # Try fuzzy match - check if evidence name is contained in entity
+                    for ev_name, ev_code in self.evidence_to_code.items():
+                        if ev_name in entity_text or entity_text in ev_name:
+                            codes.append(ev_code)
+                            break
+        
+        # Deduplicate while preserving order
+        seen = set()
+        unique_codes = []
+        for code in codes:
+            if code not in seen:
+                seen.add(code)
+                unique_codes.append(code)
+        return unique_codes
+    
+    def extract_symptoms(self, text: str) -> List[str]:
+        """Extract symptoms from text and return DDXPlus evidence codes (E_XX)."""
+        if self.ner_pipeline:
+            try:
+                entities = self.ner_pipeline(text)
+                # Filter for relevant entity types
+                symptom_entities = [
+                    e for e in entities 
+                    if e.get('entity_group') in ['Sign_symptom', 'Disease_disorder', 'Detailed_description']
+                ]
+                codes = self._map_to_evidence_codes(symptom_entities)
+                if codes:
+                    logger.info(f"HF NER extracted {len(codes)} evidence codes: {codes}")
+                    return codes
+            except Exception as e:
+                logger.warning(f"HF NER extraction failed: {e}, using regex fallback")
+        
+        # Fallback to regex-based extraction
+        return self._regex_fallback(text)
+    
+    def _regex_fallback(self, text: str) -> List[str]:
+        """Regex-based symptom extraction fallback (original SymptomsExtractor logic)."""
+        text_lower = text.lower()
+        codes = []
+        
+        # Direct mapping of common symptoms to evidence codes
+        symptom_to_code = {
+            "chest pain": "E_55",
+            "headache": "E_53", 
+            "fever": "E_91",
+            "shortness of breath": "E_56",
+            "difficulty breathing": "E_56",
+            "cough": "E_57",
+            "nausea": "E_58",
+            "vomiting": "E_59",
+            "abdominal pain": "E_60",
+            "dizziness": "E_61",
+            "fatigue": "E_62",
+            "rash": "E_63",
+            "joint pain": "E_64",
+            "back pain": "E_65",
+            "sore throat": "E_66",
+            "runny nose": "E_67",
+            "congestion": "E_67",
+            "diarrhea": "E_68",
+            "constipation": "E_69",
+        }
+        
+        for symptom, code in symptom_to_code.items():
+            if symptom in text_lower:
+                codes.append(code)
+        
+        return codes
+
+
+# Keep the original regex-based extractor as a backup
 class SymptomsExtractor:
     """Extract symptoms from patient descriptions with severity and context."""
     
@@ -78,7 +214,7 @@ class SymptomsExtractor:
         'little': SymptomSeverity.MILD,
     }
     
-    # Duration patterns (extract timeframe)
+    # Duration patterns
     DURATION_PATTERNS = [
         (r'(\d+)\s*(second|minute|min|hour|hr|day|week|month|year)s?\b', 'duration'),
         (r'\b(since|for|over|past)\s+(this\s+)?(morning|afternoon|evening|night|today|yesterday)\b', 'recent'),
@@ -126,7 +262,7 @@ class SymptomsExtractor:
         # Extract duration
         duration = SymptomsExtractor._extract_duration(text)
         
-        logger.info(f"Extracted {len(extracted_symptoms)} symptoms from text")
+        logger.info(f"Extracted {len(extracted_symptoms)} symptoms from text (regex fallback)")
         for sym in extracted_symptoms:
             logger.debug(f"  - {sym['symptom']}: {sym['severity'].name}")
         
@@ -135,7 +271,6 @@ class SymptomsExtractor:
     @staticmethod
     def _extract_severity_for_match(text: str, match_pos: int) -> SymptomSeverity:
         """Extract severity modifier near match position."""
-        # Look at words before the match (within 20 chars)
         context_start = max(0, match_pos - 20)
         context = text[context_start:match_pos]
         
@@ -143,7 +278,6 @@ class SymptomsExtractor:
             if modifier in context:
                 return severity
         
-        # Default to moderate
         return SymptomSeverity.MODERATE
     
     @staticmethod
@@ -156,7 +290,6 @@ class SymptomsExtractor:
             'upper', 'lower', 'front', 'side'
         ]
         
-        # Look at context around match
         context_start = max(0, match_pos - 30)
         context_end = min(len(text), match_pos + 30)
         context = text[context_start:context_end]
@@ -178,7 +311,6 @@ class SymptomsExtractor:
                     'raw_text': match.group(0),
                     'confidence': 0.8
                 }
-        
         return None
     
     @staticmethod
@@ -243,3 +375,14 @@ Be thorough but conversational."""
 def get_system_prompt(prompt_type: str = 'triage') -> str:
     """Get system prompt for Ollama."""
     return SYSTEM_PROMPTS.get(prompt_type, SYSTEM_PROMPTS['triage'])
+
+
+# Singleton instance for HF NER
+_biomedical_ner = None
+
+def get_biomedical_ner() -> BiomedicalNER:
+    """Get or create BiomedicalNER singleton."""
+    global _biomedical_ner
+    if _biomedical_ner is None:
+        _biomedical_ner = BiomedicalNER()
+    return _biomedical_ner

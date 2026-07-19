@@ -11,28 +11,7 @@ from ..db.supabase_client import get_supabase
 from .kg import get_kg
 from .rag import get_rag_engine
 from .unified_retrieval import get_unified_retriever
-
-# Minimal stub for HuggingFace NER since we aren't writing full ML pipelines here.
-# In a real app, this would use d4data/biomedical-ner-all
-def dummy_ner(text: str) -> List[str]:
-    # Placeholder: mock extracting symptoms
-    symptoms = []
-    text_lower = text.lower()
-    if "chest pain" in text_lower: symptoms.append("E_55")
-    if "headache" in text_lower: symptoms.append("E_53")
-    if "fever" in text_lower: symptoms.append("E_91")
-    return symptoms
-
-def evaluate_red_flags(symptoms: List[str], text: str) -> bool:
-    # Standalone triggers
-    text_lower = text.lower()
-    if any(x in text_lower for x in ["loss of consciousness", "suicid", "kill myself", "can't breathe", "bleeding heavily"]):
-        return True
-    
-    # Combination triggers mapped to dummy symptoms
-    if "E_55" in symptoms and ("shortness of breath" in text_lower or "jaw pain" in text_lower):
-        return True
-    return False
+from .ner_symptom_extractor import get_biomedical_ner
 
 # Department Synonyms
 DEPARTMENT_SYNONYMS = {
@@ -43,6 +22,30 @@ DEPARTMENT_SYNONYMS = {
     "lung": "Respiratory", "breathing": "Respiratory",
 }
 BOOKING_TRIGGER_PHRASES = ["book", "appointment", "schedule", "see a doctor", "see dr", "consult"]
+
+# Emergency detection - conservative rules
+STANDALONE_EMERGENCY = {
+    "loss of consciousness", "unconscious", "passed out",
+    "cannot breathe", "can't breathe", "unable to breathe",
+    "severe bleeding", "hemorrhage", "bleeding heavily",
+    "suicidal thoughts", "want to kill myself", "self-harm intent"
+}
+
+COMBINATION_TRIGGERS = [
+    ({"chest pain", "shortness of breath", "jaw pain", "arm pain", "radiating pain"}, 2),
+    ({"facial droop", "slurred speech", "one-sided weakness"}, 2),
+    ({"high fever", "stiff neck", "confusion"}, 2),
+]
+
+def evaluate_red_flags(symptoms: List[str], text: str) -> bool:
+    text_lower = text.lower()
+    if any(trigger in text_lower for trigger in STANDALONE_EMERGENCY):
+        return True
+    symptom_set = set(s.lower() for s in symptoms)
+    for required, min_count in COMBINATION_TRIGGERS:
+        if len(symptom_set & required) >= min_count:
+            return True
+    return False
 
 class TriageState(TypedDict):
     session_id: str
@@ -71,7 +74,9 @@ class TriageState(TypedDict):
 
 def node_emergency_check(state: TriageState) -> TriageState:
     text = state["messages"][-1]
-    symptoms = state.get("present_symptoms", []) + dummy_ner(text)
+    ner = get_biomedical_ner()
+    new_symptoms = ner.extract_symptoms(text)
+    symptoms = state.get("present_symptoms", []) + new_symptoms
     
     matched = evaluate_red_flags(symptoms, text)
     if matched:
@@ -216,7 +221,8 @@ def node_fetch_slots(state: TriageState) -> TriageState:
 
 def node_extract_symptoms(state: TriageState) -> TriageState:
     text = state["messages"][-1]
-    new_symptoms = dummy_ner(text)
+    ner = get_biomedical_ner()
+    new_symptoms = ner.extract_symptoms(text)
     curr = state.get("present_symptoms", [])
     state["present_symptoms"] = list(set(curr + new_symptoms))
     return state
@@ -307,9 +313,10 @@ def node_next_question(state: TriageState) -> TriageState:
     return state
 
 def node_classify(state: TriageState) -> TriageState:
-    # Dummy classification (we would use the XGBoost model here in a real run, 
-    # but the environment might not have it loaded fully in the web process right away)
-    import os, pickle, numpy as np
+    import os
+    import pickle
+    import numpy as np
+    from collections import Counter
     
     # Try to load XGBoost if it exists, otherwise use mock
     model_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../model"))
@@ -334,7 +341,6 @@ def node_classify(state: TriageState) -> TriageState:
         if patient_res.data:
             age = patient_res.data[0].get("age", 30)
             gender_str = patient_res.data[0].get("gender", "male")
-            # In DDXPlus, often F=0, M=1. We map accordingly.
             sex = 0 if gender_str.lower() == "female" else 1
         else:
             age, sex = 30, 1
@@ -353,19 +359,41 @@ def node_classify(state: TriageState) -> TriageState:
         state["final_diagnosis"] = pred_condition
         state["confidence"] = confidence
         state["triage_level"] = severity
+        
+        # --- Department Prediction ---
+        # 1. Try KG specialty from predicted condition
+        kg = get_kg()
+        department = None
+        condition_id = None
+        for cid, cinfo in kg.conditions.items():
+            if cinfo.get("name", "").lower() == pred_condition.lower():
+                condition_id = cid
+                break
+        
+        if condition_id:
+            department = kg.get_condition_specialty(condition_id)
+        
+        # 2. Fallback: Use symptom-to-department mapping
+        if not department:
+            from .symptom_to_dept import predict_department_from_symptoms
+            department = predict_department_from_symptoms(state["present_symptoms"])
     else:
         state["final_diagnosis"] = "General Condition"
         state["confidence"] = 0.8
         state["triage_level"] = 3
         
-    if state["confidence"] < 0.3:
+        # Fallback department prediction
+        from .symptom_to_dept import predict_department_from_symptoms
+        department = predict_department_from_symptoms(state["present_symptoms"])
+    
+    # Confidence flooring
+    confidence_floor = float(os.getenv("CONFIDENCE_FLOOR", "0.3"))
+    if state["confidence"] < confidence_floor:
         state["triage_level"] = min(state["triage_level"], 3)
         state["final_diagnosis"] = "Uncertain Diagnosis"
-        state["department"] = "General Medicine / Internal Medicine"
-    else:
-        # Hardcode department to General Medicine for prototype
-        state["department"] = "General Medicine / Internal Medicine"
-        
+        department = "General Medicine / Internal Medicine"
+    
+    state["department"] = department
     return state
 
 def node_explain(state: TriageState) -> TriageState:

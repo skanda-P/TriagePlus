@@ -1,95 +1,235 @@
-# TriagePlus v2
+# TriagePlus v4
 
-TriagePlus is an AI-powered medical triage platform featuring:
-- A LangGraph-powered conversational AI engine.
-- RAG using FAISS and HuggingFace for retrieving similar clinical conversations and MedQuAD information.
-- XGBoost-based symptom classification (trained on DDXPlus).
-- A real-time Doctor Portal and diagnostics monitor.
+AI-powered medical triage platform with LangGraph conversational engine, hybrid RAG (BM25+Dense), XGBoost symptom classification, and real-time Doctor Portal.
 
-## Setup Instructions
+## Architecture Overview
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│   Frontend      │────▶│   FastAPI        │────▶│   Supabase      │
+│   (React/Vite)  │ WS  │   (LangGraph)    │     │   (PostgreSQL)  │
+└─────────────────┘     └────────┬─────────┘     └─────────────────┘
+                                 │
+              ┌──────────────────┼──────────────────┐
+              ▼                  ▼                  ▼
+        ┌────────────┐    ┌─────────────┐    ┌─────────────┐
+        │  XGBoost   │    │  Hybrid     │    │  Knowledge  │
+        │  Classifier│    │  RAG (BM25+ │    │  Graph      │
+        │  (DDXPlus) │    │  Dense)     │    │  (DDXPlus)  │
+        └────────────┘    └─────────────┘    └─────────────┘
+              ▲                  ▲                  ▲
+              │                  │                  │
+        ┌─────┴─────┐      ┌─────┴─────┐      ┌─────┴─────┐
+        │HF NER     │      │FAISS      │      │Condition  │
+        │(biomedical│      │Indices    │      │Specialties│
+        │ ner-all)  │      │(3 sources)│      │           │
+        └───────────┘      └───────────┘      └───────────┘
+```
+
+## Key Components
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| **Symptom Extraction** | `d4data/biomedical-ner-all` (HF) | NER → DDXPlus evidence codes (E_XX) |
+| **Emergency Detection** | Conservative keyword + combo rules | ESI-like triage levels 1-5 |
+| **Classification** | XGBoost (CUDA) on DDXPlus | 49 pathology classification |
+| **Department Mapping** | KG specialty → Symptom2Disease → Keywords | Cardiology, Neurology, etc. |
+| **Hybrid RAG** | FAISS + BM25 (3 sources) | MedQuAD 0.3/0.7, Conv 0.4/0.6, MedDialog 0.5/0.5 |
+| **Next Question** | KG Information Gain | Intelligent symptom follow-up |
+| **Real-time** | WebSocket + LangGraph checkpointer | Session persistence |
+
+## Quick Start
+
+### Prerequisites
+- Python 3.10+
+- Node.js 18+
+- Supabase project
+- CUDA 12.1+ (for GPU training) or CPU fallback
 
 ### 1. Database Setup
-1. Create a Supabase project.
-2. Run the SQL script located in `supabase/migrations/0001_init.sql` in the Supabase SQL editor to create all necessary tables and functions.
-3. Obtain your `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_ANON_KEY`.
+```bash
+# Run SQL in Supabase SQL Editor
+supabase/migrations/0001_init.sql
+```
 
 ### 2. Backend Setup
-The backend requires Python 3.9+.
-
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# Windows:
+venv\Scripts\activate
+# Linux/Mac:
+source venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
-**Note on CUDA & FAISS on Windows:**
-If you are on Windows, `faiss-gpu` is not available via standard `pip`. 
-To ensure FAISS uses GPU acceleration on Windows, install `faiss-gpu` via Conda instead of pip:
-```bash
-conda install -c pytorch faiss-gpu
-```
-
-Configure your `.env` file in the `backend/` directory:
+### 3. Environment Variables
+Create `backend/.env`:
 ```env
-SUPABASE_URL=<your-supabase-url>
-SUPABASE_SERVICE_ROLE_KEY=<your-service-role-key>
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+SUPABASE_ANON_KEY=your-anon-key
 DEVELOPER_PASSWORD=devpass
+OLLAMA_BASE_URL=http://localhost:11434
+CONFIDENCE_FLOOR=0.3
 ```
 
-### 3. Training the XGBoost Model
-The XGBoost model classifies the patient's symptoms into a pathology using the DDXPlus dataset.
+### 4. Generate Artifacts (GPU Device)
 
+**Step 1: Department Mapping**
 ```bash
-python backend/scripts/train_xgboost.py
+python scripts/create_symptom_dept_mapping.py
+# Output: backend/model/symptom_dept_mapping.json
 ```
-This script runs with `device='cuda'` for GPU acceleration. Ensure your CUDA toolkit is properly configured.
 
-### 4. Generating FAISS Indices (RAG Embeddings)
-The semantic search indices for the RAG pipeline are generated separately. If you are generating the embeddings locally, follow these steps:
+**Step 2: Train XGBoost**
+```bash
+python scripts/train_xgboost.py
+# Output: backend/model/xgb_model.json, mlb.pkl, label_encoder.pkl
+```
 
-1. Create a script or use an existing script to process the source data (e.g., MedQuAD XML files, clinical conversation transcripts).
-2. Configure HuggingFace embeddings inside your script, ensuring that you use GPU acceleration for speed:
-   ```python
-   from langchain_community.embeddings import HuggingFaceEmbeddings
-   embeddings = HuggingFaceEmbeddings(
-       model_name="NeuML/pubmedbert-base-embeddings",
-       model_kwargs={'device': 'cuda'}  # Ensure 'cuda' is set
-   )
-   ```
-3. Initialize a FAISS vector store with your loaded documents and the embedding model.
-4. Save the generated indices to their designated folders so the backend can load them on startup:
-   - MedQuAD Index: Save to `backend/model/faiss/medquad`
-   - Conversational Index: Save to `backend/model/faiss/conversations`
-   
-*(Note: If you have a dedicated script like `backend/scripts/generate_embeddings.py`, run it using your virtual environment where CUDA and FAISS are correctly installed.)*
+**Step 3: Build FAISS Indices**
+```bash
+python scripts/build_medquad_index.py
+python scripts/build_conversations_index.py
+python scripts/build_meddialog_qa_index.py
+# Output: backend/data/faiss/{medquad,conversations,meddialog}/
+```
 
 ### 5. Frontend Setup
-The frontend is a React + Vite application using Tailwind CSS.
-
 ```bash
 cd frontend
 npm install
 ```
 
-Configure your `.env` file in the `frontend/` directory:
+Create `frontend/.env`:
 ```env
 VITE_API_BASE_URL=http://localhost:8000
 VITE_WS_BASE_URL=ws://localhost:8000
-VITE_SUPABASE_URL=<your-supabase-url>
-VITE_SUPABASE_ANON_KEY=<your-anon-key>
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-key
 ```
 
-### 6. Running the Application
+### 6. Run Application
 
-**Start the Backend:**
+**Backend** (terminal 1):
+```bash
+cd backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+**Frontend** (terminal 2):
+```bash
+cd frontend && npm run dev
+```
+
+**Ollama** (terminal 3):
+```bash
+ollama pull llama3.2
+ollama serve
+```
+
+## Project Structure
+
+```
+triagePlus_v4/
+├── backend/
+│   ├── app/
+│   │   ├── core/
+│   │   │   ├── triage_graph.py      # LangGraph state machine
+│   │   │   ├── ner_symptom_extractor.py  # HF NER + regex fallback
+│   │   │   ├── unified_retrieval.py      # Hybrid BM25+Dense (3 sources)
+│   │   │   ├── rag.py                    # FAISS query engine
+│   │   │   ├── kg.py                     # DDXPlus Knowledge Graph
+│   │   │   ├── symptom_to_dept.py        # Runtime dept prediction
+│   │   │   └── emergency_detection.py    # Conservative ESI rules
+│   │   ├── routers/
+│   │   │   ├── chat.py           # Patient WebSocket
+│   │   │   ├── diagnostics.py    # Dev monitor WebSocket
+│   │   │   └── doctor.py         # Doctor Portal REST
+│   │   └── main.py               # FastAPI + lifespan
+│   ├── scripts/
+│   │   ├── train_xgboost.py              # XGBoost training (CUDA)
+│   │   ├── create_symptom_dept_mapping.py # Dept mapping generator
+│   │   ├── build_medquad_index.py        # MedQuAD FAISS + BM25
+│   │   ├── build_conversations_index.py  # Conv FAISS + BM25
+│   │   ├── build_meddialog_qa_index.py   # MedDialog FAISS + BM25
+│   │   └── build_ddxplus_kg.py           # Knowledge Graph builder
+│   ├── data/
+│   │   ├── faiss/               # Generated indices (gitignored)
+│   │   ├── DDXPlus/             # Raw DDXPlus dataset
+│   │   └── prompts/             # Doctor conversation logs
+│   └── model/                   # Generated models (gitignored)
+│       ├── xgb_model.json
+│       ├── mlb.pkl
+│       ├── label_encoder.pkl
+│       └── symptom_dept_mapping.json
+├── frontend/
+│   ├── src/
+│   │   ├── pages/
+│   │   │   ├── Chat.tsx           # Patient chat
+│   │   │   ├── DoctorPortal.tsx   # Doctor dashboard
+│   │   │   └── RagMonitor.tsx     # Dev diagnostics
+│   │   └── ...
+│   └── ...
+└── supabase/
+    └── migrations/              # Database schema
+```
+
+## API Endpoints
+
+### Patient WebSocket
+```
+WS /api/v1/ws/chat/{session_id}
+```
+Message types: `intake_form`, `message`, `booking_confirm`, `payment`
+
+### Diagnostics Monitor
+```
+WS /api/v1/ws/diagnostics?token={DEVELOPER_PASSWORD}
+```
+Real-time LangGraph node events + state
+
+### Doctor Portal (REST)
+```
+GET  /api/v1/doctor/slots
+POST /api/v1/doctor/appointments
+GET  /api/v1/public/specialties
+```
+
+## Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CONFIDENCE_FLOOR` | `0.3` | Confidence threshold for "Uncertain Diagnosis" |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint |
+| `DEVELOPER_PASSWORD` | `devpass` | Diagnostics WS auth |
+
+## Data Sources
+
+| Source | Size | Use Case | Hybrid Weight |
+|--------|------|----------|---------------|
+| **MedQuAD** | ~12k QA | Medical knowledge | BM25 0.3 / Dense 0.7 |
+| **Conversations** | ~5k turns | Few-shot doctor prompts | BM25 0.4 / Dense 0.6 |
+| **MedDialog** | ~100k QA | Direct Q&A answering | BM25 0.5 / Dense 0.5 |
+
+## Development
+
+### Running Tests
 ```bash
 cd backend
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+pytest tests/ -v
 ```
 
-**Start the Frontend:**
+### Linting
 ```bash
-cd frontend
-npm run dev
+ruff check backend/app/
 ```
+
+### Adding New Specialty
+1. Add conversation logs to `backend/data/prompts/{Specialty}/`
+2. Re-run `build_conversations_index.py`
+3. KG specialty mapping in `app/core/kg.py:get_condition_specialty()`
+
+## License
+MIT

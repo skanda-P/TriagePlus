@@ -19,6 +19,7 @@ from collections import defaultdict
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
+from rank_bm25 import BM25Okapi
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -217,6 +218,17 @@ def save_index(index: faiss.Index, chunks: List[Dict], embeddings: np.ndarray):
     faiss_path = FAISS_DIR / "conversations.index"
     faiss.write_index(index, str(faiss_path))
     logger.info(f"Saved FAISS index to {faiss_path}")
+    
+    # Build BM25 index
+    logger.info("Building BM25 index...")
+    texts = [chunk.get('doctor_few_shot', chunk.get('full_text', '')) for chunk in chunks]
+    tokenized = [t.lower().split() for t in texts]
+    bm25 = BM25Okapi(tokenized)
+    
+    bm25_path = FAISS_DIR / "conversations_bm25.pkl"
+    with open(bm25_path, 'wb') as f:
+        pickle.dump(bm25, f)
+    logger.info(f"Saved BM25 index to {bm25_path}")
     
     # Save metadata with pre-extracted doctor turns
     metadata = {
