@@ -4,9 +4,8 @@ Includes request validation, error codes, and structured logging
 """
 
 import logging
-import traceback
 import json
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Optional, Callable
 from functools import wraps
 from datetime import datetime
 import uuid
@@ -146,65 +145,89 @@ class RateLimitError(TriagePlusException):
         )
 
 def with_error_handling(func: Callable) -> Callable:
-    """Decorator for automatic error handling and logging"""
+    """Decorator for automatic error handling and logging.
+
+    For FastAPI route handlers, the wrapper RAISES HTTPException for any
+    TriagePlusException or unexpected exception, so FastAPI returns the
+    correct HTTP status code (instead of a 200-with-error-body dict).
+    A global exception handler registered in main.py converts
+    TriagePlusException into the structured {error: {...}} envelope.
+    """
+    from fastapi import HTTPException
+
     @wraps(func)
     async def async_wrapper(*args, **kwargs):
         request_id = str(uuid.uuid4())
-        
+
         try:
             logger.info(f"Starting {func.__name__}", extra={'request_id': request_id})
             result = await func(*args, **kwargs)
             logger.info(f"Completed {func.__name__}", extra={'request_id': request_id})
             return result
-        
+
+        except HTTPException:
+            # Already a well-formed FastAPI error - let it propagate untouched.
+            raise
+
         except TriagePlusException as e:
             e.request_id = request_id
-            logger.warning(f"TriagePlus exception in {func.__name__}: {e.message}", 
-                          extra={'request_id': request_id})
-            return {'status_code': e.status_code, **e.to_dict()}
-        
+            logger.warning(
+                f"TriagePlus exception in {func.__name__}: {e.message}",
+                extra={'request_id': request_id},
+            )
+            raise HTTPException(status_code=e.status_code, detail=e.to_dict()['error'])
+
         except Exception as e:
-            logger.error(f"Unhandled exception in {func.__name__}: {str(e)}", 
-                        extra={'request_id': request_id},
-                        exc_info=True)
-            return {
-                'status_code': 500,
-                'error': {
+            logger.error(
+                f"Unhandled exception in {func.__name__}: {str(e)}",
+                extra={'request_id': request_id},
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail={
                     'code': ErrorCode.INTERNAL_ERROR.value,
                     'message': 'Internal server error',
-                    'request_id': request_id
-                }
-            }
-    
+                    'request_id': request_id,
+                },
+            )
+
     @wraps(func)
     def sync_wrapper(*args, **kwargs):
         request_id = str(uuid.uuid4())
-        
+
         try:
             logger.info(f"Starting {func.__name__}", extra={'request_id': request_id})
             result = func(*args, **kwargs)
             logger.info(f"Completed {func.__name__}", extra={'request_id': request_id})
             return result
-        
+
+        except HTTPException:
+            raise
+
         except TriagePlusException as e:
             e.request_id = request_id
-            logger.warning(f"TriagePlus exception in {func.__name__}: {e.message}", 
-                          extra={'request_id': request_id})
-            return {'status_code': e.status_code, **e.to_dict()}
-        
+            logger.warning(
+                f"TriagePlus exception in {func.__name__}: {e.message}",
+                extra={'request_id': request_id},
+            )
+            raise HTTPException(status_code=e.status_code, detail=e.to_dict()['error'])
+
         except Exception as e:
-            logger.error(f"Unhandled exception in {func.__name__}: {str(e)}", 
-                        extra={'request_id': request_id},
-                        exc_info=True)
-            return {
-                'status_code': 500,
-                'error': {
+            logger.error(
+                f"Unhandled exception in {func.__name__}: {str(e)}",
+                extra={'request_id': request_id},
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail={
                     'code': ErrorCode.INTERNAL_ERROR.value,
                     'message': 'Internal server error',
-                    'request_id': request_id
-                }
-            }
-    
+                    'request_id': request_id,
+                },
+            )
+
     # Return appropriate wrapper
     import inspect
     if inspect.iscoroutinefunction(func):

@@ -5,11 +5,12 @@ Tracks request latency, error rates, cache performance, LLM performance
 
 import time
 import logging
-from typing import Dict, List, Optional, Callable
+import asyncio
+from typing import Dict, Optional, Callable
 from functools import wraps
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import defaultdict, deque
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 import json
 
 logger = logging.getLogger(__name__)
@@ -255,5 +256,3 @@ def setup_default_checks():
     health = get_health_check()
     health.register_check("database", check_database)
     health.register_check("llm_service", check_llm_service)
-
-import asyncio

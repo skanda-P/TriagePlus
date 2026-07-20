@@ -32,3 +32,32 @@ backend/data/
 *.zip
 *.tar.gz
 *.rar
+
+# Runtime databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Cache / type-check / lint
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.eggs/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Tooling configs (local-only, not for the repo)
+opencode.json
+opencode.jsonc
+.opencode/
+
+# One-off / generated review docs
+*_Code_Review.md
+*_code_review.md
+CODE_REVIEW*.md

@@ -6,217 +6,242 @@ Computes information gain for intelligent question ranking
 """
 
 import json
-import os
 import pickle
-import numpy as np
-from collections import defaultdict, Counter
-from typing import Dict, List, Tuple, Set
-import networkx as nx
 import logging
 import ast
+from pathlib import Path
+from collections import defaultdict, Counter
+from typing import Dict, List, Set, Optional
+
+import numpy as np
+import networkx as nx
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def _base_evidence(evid: str) -> str:
+    """Strip the value-suffix from an evidence code: 'E_204_@_V_10' -> 'E_204'.
+
+    The runtime NER/XGBoost pipelines emit *base* codes (without the value
+    suffix), so the KG must store base codes too — otherwise
+    `evidence_condition_counts[E_55]` lookups miss because the only keys
+    present are `E_55_@_V_89`, `E_55_@_V_90`, etc.
+    """
+    return evid.split("_@_")[0] if "_@_" in evid else evid
+
+
 class DDXPlusKGBuilder:
     """Build knowledge graph from DDXPlus dataset"""
-    
+
     def __init__(self, data_dir: str = "backend/data"):
         backend_dir = Path(__file__).parent.parent
         self.data_dir = backend_dir / data_dir
         self.conditions_file = self.data_dir / "DDXPlus" / "release_conditions.json"
         self.evidences_file = self.data_dir / "DDXPlus" / "release_evidences.json"
         self.eval_set_file = self.data_dir / "DDXPlus" / "eval_set.json"
-        
-        self.conditions = {}
-        self.evidences = {}
-        self.eval_cases = []
+
+        self.conditions: Dict[str, Dict] = {}
+        self.evidences: Dict[str, Dict] = {}
+        self.eval_cases: List[Dict] = []
         self.graph = nx.DiGraph()
-        
-        self.evidence_condition_counts = defaultdict(Counter)  # P(condition | evidence)
-        self.condition_evidence_counts = defaultdict(Counter)  # P(evidence | condition)
-        
+
+        # present counts
+        self.evidence_condition_counts: Dict[str, Counter] = defaultdict(Counter)
+        self.condition_evidence_counts: Dict[str, Counter] = defaultdict(Counter)
+        # NEW: absent counts (needed for proper expected-posterior-entropy IG)
+        self.evidence_condition_absent_counts: Dict[str, Counter] = defaultdict(Counter)
+        # total cases per pathology, needed to compute P(E|C).
+        self.condition_case_counts: Counter = Counter()
+
     def load_data(self):
         """Load DDXPlus JSON files"""
         logger.info("Loading DDXPlus data...")
-        
-        with open(self.conditions_file, 'r') as f:
+
+        with open(self.conditions_file, "r", encoding="utf-8") as f:
             self.conditions = json.load(f)
         logger.info(f"Loaded {len(self.conditions)} conditions")
-        
-        with open(self.evidences_file, 'r') as f:
+
+        with open(self.evidences_file, "r", encoding="utf-8") as f:
             self.evidences = json.load(f)
         logger.info(f"Loaded {len(self.evidences)} evidences")
-        
-        with open(self.eval_set_file, 'r') as f:
+
+        with open(self.eval_set_file, "r", encoding="utf-8") as f:
             self.eval_cases = json.load(f)
         logger.info(f"Loaded {len(self.eval_cases)} evaluation cases")
-    
+
+    def _condition_display_name(self, cond_data: Dict) -> str:
+        return cond_data.get("condition_name") or cond_data.get("name") or ""
+
+    def _evidence_display_text(self, ev_data: Dict) -> str:
+        # `name` in release_evidences.json is the code itself — use question_en
+        return ev_data.get("question_en") or ev_data.get("name") or ""
+
     def build_graph(self):
         """Build NetworkX directed graph with nodes and edges"""
         logger.info("Building knowledge graph...")
-        
+
         # Add condition nodes
         for cond_id, cond_data in self.conditions.items():
             self.graph.add_node(
                 cond_id,
-                node_type='condition',
-                name=cond_data.get('condition_name', ''),
-                prevalence=cond_data.get('prevalence', 0)
+                node_type="condition",
+                name=self._condition_display_name(cond_data),
+                prevalence=cond_data.get("prevalence", 0),
+                severity=cond_data.get("severity", 3),
             )
-        
-        # Add evidence nodes
+
+        # Add evidence nodes (base codes only)
         for ev_id, ev_data in self.evidences.items():
+            base_ev = _base_evidence(ev_id)
             self.graph.add_node(
-                ev_id,
-                node_type='evidence',
-                name=ev_data.get('question_en', ev_data.get('name', '')),
-                icd_code=ev_data.get('icd_code', '')
+                base_ev,
+                node_type="evidence",
+                text=self._evidence_display_text(ev_data),
+                name=base_ev,
+                icd_code=ev_data.get("icd_code", ""),
             )
-        
-        # Build edges: condition -> evidence relationships
+
+        # All baseline evidences per condition — for computing absent set.
+        # release_conditions.json lists candidate evidences per pathology under
+        # `symptoms` and `antecedents`. We'll treat any evidence in
+        # `condition_evidence_counts[C]` as a candidate; the present/absent
+        # distinction comes from the eval_set cases.
+        cond_to_candidate_evidences: Dict[str, Set[str]] = {}
+        for cond_id, cond_data in self.conditions.items():
+            cand = set()
+            for k in cond_data.get("symptoms", {}):
+                cand.add(_base_evidence(k))
+            for k in cond_data.get("antecedents", {}):
+                cand.add(_base_evidence(k))
+            cond_to_candidate_evidences[cond_id] = cand
+
         logger.info("Adding edges (condition -> evidence relationships)...")
         edge_count = 0
-        
+
         for case in self.eval_cases:
-            condition_id = str(case.get('PATHOLOGY', ''))
-            if not condition_id: continue
+            condition_id = str(case.get("PATHOLOGY", ""))
+            if not condition_id:
+                continue
+            self.condition_case_counts[condition_id] += 1
+
             try:
-                present_evidences = ast.literal_eval(case.get('EVIDENCES', '[]'))
-            except:
-                present_evidences = []
-            absent_evidences = []
-            
+                present_evidences_raw = ast.literal_eval(case.get("EVIDENCES", "[]"))
+            except Exception as e:
+                logger.warning(f"Could not parse EVIDENCES for case (cond={condition_id}): {e}")
+                present_evidences_raw = []
+            present_evidences = [_base_evidence(str(e)) for e in present_evidences_raw]
+            present_evidences_set = set(present_evidences)
+
+            # All candidate evidences that *could* have been asked for this
+            # condition. The DDXPlus eval cases only record what was asked (and
+            # the answer); absent evidence here means "asked and answered no"
+            # vs. "not asked at all". We infer absence by taking the union of
+            # all candidate evidences for this condition (across the whole
+            # eval set) minus the ones recorded as present in this case. That's
+            # a noisy proxy but better than nothing.
+            candidate_set = cond_to_candidate_evidences.get(condition_id, set()) | present_evidences_set
+            absent_evidences = candidate_set - present_evidences_set
+
             # Present evidences: strong connection
             for ev_id in present_evidences:
-                ev_id_str = str(ev_id)
                 self.graph.add_edge(
-                    condition_id, 
-                    ev_id_str,
-                    weight=1.0,  # Present
-                    type='present'
+                    condition_id,
+                    ev_id,
+                    weight=1.0,
+                    type="present",
                 )
-                self.evidence_condition_counts[ev_id_str][condition_id] += 1
-                self.condition_evidence_counts[condition_id][ev_id_str] += 1
+                self.evidence_condition_counts[ev_id][condition_id] += 1
+                self.condition_evidence_counts[condition_id][ev_id] += 1
                 edge_count += 1
-            
+
             # Absent evidences: weak negative connection (for discriminating)
             for ev_id in absent_evidences:
-                ev_id_str = str(ev_id)
-                if not self.graph.has_edge(condition_id, ev_id_str):
+                if not self.graph.has_edge(condition_id, ev_id):
                     self.graph.add_edge(
                         condition_id,
-                        ev_id_str,
-                        weight=0.0,  # Absent
-                        type='absent'
+                        ev_id,
+                        weight=0.0,
+                        type="absent",
                     )
                     edge_count += 1
-        
-        logger.info(f"Added {edge_count} edges")
-    
-    def compute_information_gain(self, evidence_id: str, current_evidences: Set[str] = None) -> float:
-        """
-        Compute information gain of asking about a specific evidence
-        Higher IG = more discriminative evidence
-        """
-        if current_evidences is None:
-            current_evidences = set()
-        
+                self.evidence_condition_absent_counts[ev_id][condition_id] += 1
+
+        logger.info(f"Added {edge_count} edges across {sum(self.condition_case_counts.values())} cases")
+
+    def compute_information_gain(
+        self,
+        evidence_id: str,
+        present_symptoms: Optional[Set[str]] = None,
+        asked_symptoms: Optional[Set[str]] = None,
+    ) -> float:
+        """Compute expected-posterior-entropy IG (kept for standalone use)."""
+        # This is a thin wrapper used by tooling — the runtime IG lives in kg.py.
+        if present_symptoms is None:
+            present_symptoms = set()
+        if asked_symptoms is None:
+            asked_symptoms = set()
+
         if evidence_id not in self.evidence_condition_counts:
             return 0.0
-        
-        condition_counts = self.evidence_condition_counts[evidence_id]
-        if not condition_counts:
+
+        present_counts = self.evidence_condition_counts[evidence_id]
+        absent_counts = self.evidence_condition_absent_counts.get(evidence_id, Counter())
+
+        total_present = sum(present_counts.values())
+        total_absent = sum(absent_counts.values())
+        total = total_present + total_absent
+        if total == 0:
             return 0.0
-        
-        # Probability of each condition given this evidence
-        total = sum(condition_counts.values())
-        probs = np.array([count / total for count in condition_counts.values()])
-        
-        # Shannon entropy (information gain metric)
-        entropy = -np.sum(probs * np.log2(probs + 1e-10))
-        
-        return entropy
-    
-    def rank_next_questions(self, current_symptoms: List[str], asked_symptoms: List[str] = None) -> List[Tuple[str, float]]:
-        """
-        Rank next questions by information gain
-        Returns list of (evidence_id, score) tuples
-        """
-        if asked_symptoms is None:
-            asked_symptoms = []
-        
-        asked_set = set(asked_symptoms)
-        current_set = set(current_symptoms)
-        
-        # Find candidate next evidences
-        candidates = {}
-        
-        # Get all conditions compatible with current symptoms
-        if current_symptoms:
-            compatible_conditions = set()
-            for symptom in current_symptoms:
-                if symptom in self.evidences:
-                    # Find conditions with this evidence
-                    for condition_id in self.evidence_condition_counts.get(symptom, {}).keys():
-                        if symptom not in asked_set:
-                            compatible_conditions.add(condition_id)
-        else:
-            compatible_conditions = set(self.conditions.keys())
-        
-        # Find most informative unanswered evidence for remaining conditions
-        for condition_id in compatible_conditions:
-            outgoing_edges = self.graph.out_edges(condition_id, data=True)
-            for _, evidence_id, edge_data in outgoing_edges:
-                if evidence_id not in asked_set and evidence_id not in current_set:
-                    if evidence_id not in candidates:
-                        candidates[evidence_id] = self.compute_information_gain(evidence_id, current_set)
-        
-        # Sort by information gain
-        ranked = sorted(candidates.items(), key=lambda x: x[1], reverse=True)
-        return ranked[:10]  # Return top 10
-    
-    def get_condition_evidence_profile(self, condition_id: str) -> Dict:
-        """Get all evidences associated with a condition"""
-        evidences = []
-        for _, evidence_id, edge_data in self.graph.out_edges(condition_id, data=True):
-            evidences.append({
-                'evidence_id': evidence_id,
-                'evidence_name': self.evidences.get(evidence_id, {}).get('name', ''),
-                'presence': edge_data.get('type', 'unknown')
-            })
-        return {
-            'condition_id': condition_id,
-            'condition_name': self.conditions.get(condition_id, {}).get('name', ''),
-            'evidences': evidences
-        }
-    
+
+        # P(condition | E present) and P(condition | E absent)
+        cond_set = set(present_counts) | set(absent_counts)
+        p_present = total_present / total
+        p_absent = total_absent / total
+
+        def _entropy(counter: Counter) -> float:
+            tot = sum(counter.values())
+            if tot == 0:
+                return 0.0
+            probs = np.array([c / tot for c in counter.values()])
+            return float(-np.sum(probs[probs > 0] * np.log2(probs[probs > 0])))
+
+        return _entropy(Counter({c: present_counts[c] + absent_counts[c] for c in cond_set})) - (
+            p_present * _entropy(present_counts) + p_absent * _entropy(absent_counts)
+        )
+
     def save_graph(self, output_path: str = "backend/data/ddxplus_kg.pkl"):
         """Save graph and metadata to pickle"""
         backend_dir = Path(__file__).parent.parent
         full_path = backend_dir / output_path
         logger.info(f"Saving knowledge graph to {full_path}")
-        
+
         kg_data = {
-            'graph': self.graph,
-            'conditions': self.conditions,
-            'evidences': self.evidences,
-            'evidence_condition_counts': self.evidence_condition_counts,
-            'condition_evidence_counts': self.condition_evidence_counts,
+            "graph": self.graph,
+            "conditions": self.conditions,
+            "evidences": self.evidences,
+            "evidence_condition_counts": self.evidence_condition_counts,
+            "condition_evidence_counts": self.condition_evidence_counts,
+            "evidence_condition_absent_counts": self.evidence_condition_absent_counts,
+            "condition_case_counts": self.condition_case_counts,
         }
-        
+
         full_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(full_path, 'wb') as f:
+        with open(full_path, "wb") as f:
             pickle.dump(kg_data, f)
-        
-        logger.info(f"Graph saved: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")
-    
+
+        logger.info(
+            f"Graph saved: {self.graph.number_of_nodes()} nodes, "
+            f"{self.graph.number_of_edges()} edges"
+        )
+
     def build(self):
         """Execute full pipeline"""
         self.load_data()
         self.build_graph()
         self.save_graph()
         logger.info("Knowledge graph built successfully!")
+
 
 if __name__ == "__main__":
     builder = DDXPlusKGBuilder()

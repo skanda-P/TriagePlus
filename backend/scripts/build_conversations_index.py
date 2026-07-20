@@ -8,7 +8,6 @@ Build FAISS index for medical conversations with 3-turn sliding window.
 """
 
 import json
-import os
 import pickle
 import logging
 import re
@@ -20,6 +19,12 @@ import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
+
+# Shared tokenizer for build + runtime BM25 continuity.
+
+
+def _tokenize(text):
+    return re.findall(r"\b\w+\b", (text or "").lower())
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -195,10 +200,17 @@ def build_faiss_index(chunks: List[Dict], model: SentenceTransformer) -> Tuple[f
     # Extract text for embedding (full conversation text)
     texts = [chunk['full_text'] for chunk in chunks]
     
-    # Generate embeddings
-    logger.info("Generating embeddings...")
-    embeddings = model.encode(texts, batch_size=32, show_progress_bar=True)
-    embeddings = embeddings.astype('float32')
+    # Generate embeddings — L2-normalize so cosine similarity is consistent
+    # with the runtime query path (which also normalizes). Without this,
+    # `IndexFlatL2` on un-normalized corpus vectors is neither true L2 nor
+    # true cosine, and the dense ranking becomes meaningless.
+    embeddings = model.encode(
+        texts,
+        batch_size=32,
+        show_progress_bar=True,
+        normalize_embeddings=True,
+    )
+    embeddings = np.asarray(embeddings, dtype="float32")
     
     # Create FAISS index
     dimension = embeddings.shape[1]
@@ -219,10 +231,13 @@ def save_index(index: faiss.Index, chunks: List[Dict], embeddings: np.ndarray):
     faiss.write_index(index, str(faiss_path))
     logger.info(f"Saved FAISS index to {faiss_path}")
     
-    # Build BM25 index
-    logger.info("Building BM25 index...")
-    texts = [chunk.get('doctor_few_shot', chunk.get('full_text', '')) for chunk in chunks]
-    tokenized = [t.lower().split() for t in texts]
+    # Build BM25 index — use `full_text` (the same field the dense path
+    # embedded) so a symptom query that mentions "chest pain" gets BM25
+    # credit even when the patient-side text (not the doctor_few_shot
+    # alone) contains it. Tokenize via the shared regex helper for parity
+    # with the runtime query tokenization.
+    texts = [chunk.get("full_text", chunk.get("doctor_few_shot", "")) for chunk in chunks]
+    tokenized = [_tokenize(t) for t in texts]
     bm25 = BM25Okapi(tokenized)
     
     bm25_path = FAISS_DIR / "conversations_bm25.pkl"
@@ -287,8 +302,8 @@ def main():
     logger.info("✓ Conversations index built successfully!")
     logger.info(f"  - {len(all_chunks)} chunks indexed")
     logger.info(f"  - Embedding dimension: {embeddings.shape[1]}")
-    logger.info(f"  - Hybrid search: 0.4 BM25 + 0.6 Dense")
-    logger.info(f"  - Doctor turns pre-extracted for few-shot")
+    logger.info("  - Hybrid search: 0.4 BM25 + 0.6 Dense")
+    logger.info("  - Doctor turns pre-extracted for few-shot")
     logger.info(f"  - Specialties: {', '.join(chunks_by_specialty.keys())}")
 
 

@@ -41,15 +41,26 @@ AI-powered medical triage platform with LangGraph conversational engine, hybrid 
 ## Quick Start
 
 ### Prerequisites
-- Python 3.10+
+- Python **3.10–3.12** (3.13 also works but `scikit-learn<1.5` ships no wheel for it — `requirements.txt` relaxes the pin to `>=1.4` to accommodate both)
 - Node.js 18+
 - Supabase project
 - CUDA 12.1+ (for GPU training) or CPU fallback
+- Ollama (`ollama pull llama3.2`) for LLM-generated questions/explanations (falls back to deterministic templates if unavailable)
 
 ### 1. Database Setup
+Run the SQL migrations in the Supabase SQL Editor in order:
 ```bash
-# Run SQL in Supabase SQL Editor
 supabase/migrations/0001_init.sql
+supabase/migrations/0002_anon_intake_policies.sql
+```
+Then seed a doctor login:
+```bash
+cd backend && python scripts/seed_doctor.py
+#   email: doctor@hospital.com   password: password123
+```
+Optionally generate synthetic doctors + slots:
+```bash
+python scripts/generate_synthetic_doctors.py      # repo root ./scripts/
 ```
 
 ### 2. Backend Setup
@@ -64,6 +75,10 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+> The full set of dependencies, including the `torch`, `langchain-ollama`, `langchain-core`,
+> `requests`, `scipy`, and `python-dotenv` packages used at runtime, is pinned in
+> `backend/requirements.txt` (CPU) / `backend/requirements-gpu.txt` (CUDA).
+
 ### 3. Environment Variables
 Create `backend/.env`:
 ```env
@@ -75,26 +90,18 @@ OLLAMA_BASE_URL=http://localhost:11434
 CONFIDENCE_FLOOR=0.3
 ```
 
-### 4. Generate Artifacts (GPU Device)
+### 4. Generate Artifacts (GPU recommended; elided here)
 
-**Step 1: Department Mapping**
-```bash
-python scripts/create_symptom_dept_mapping.py
-# Output: backend/model/symptom_dept_mapping.json
-```
+> Full step-by-step commands + outputs + troubleshooting live in **[BUILD.md](BUILD.md)**.
 
-**Step 2: Train XGBoost**
+TL;DR (run from `backend/`):
 ```bash
-python scripts/train_xgboost.py
-# Output: backend/model/xgb_model.json, mlb.pkl, label_encoder.pkl
-```
-
-**Step 3: Build FAISS Indices**
-```bash
-python scripts/build_medquad_index.py
-python scripts/build_conversations_index.py
-python scripts/build_meddialog_qa_index.py
-# Output: backend/data/faiss/{medquad,conversations,meddialog}/
+python scripts/build_ddxplus_kg.py              # Knowledge Graph → backend/data/ddxplus_kg.pkl
+python scripts/create_symptom_dept_mapping.py   # Dept mapping    → backend/model/symptom_dept_mapping.json
+python scripts/train_xgboost.py                 # XGBoost         → backend/model/xgb_model.json, mlb.pkl, label_encoder.pkl
+python scripts/build_medquad_index.py           # MedQuAD FAISS + BM25
+python scripts/build_conversations_index.py     # Conversations FAISS + BM25
+python scripts/build_meddialog_qa_index.py      # MedDialog  FAISS + BM25
 ```
 
 ### 5. Frontend Setup
@@ -109,6 +116,12 @@ VITE_API_BASE_URL=http://localhost:8000
 VITE_WS_BASE_URL=ws://localhost:8000
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
+```
+
+Typecheck / production build:
+```bash
+npm run lint      # tsc --noEmit
+npm run build     # tsc && vite build (outputs frontend/dist/)
 ```
 
 ### 6. Run Application
@@ -218,12 +231,22 @@ GET  /api/v1/public/specialties
 ### Running Tests
 ```bash
 cd backend
-pytest tests/ -v
+pytest tests/ -v              # all tests
+pytest tests/test_intake_fsm.py tests/test_doctor_isolation.py tests/test_rag_path_contract.py -v
 ```
+> Note: tests inside `tests/test_kg_name_mapping.py` and `tests/test_lifespan_checkpointer.py`
+> import `app.core.triage_graph`, which transitively pulls in
+> `sentence-transformers` / `pandas` / `pyarrow` — install the full
+> `requirements.txt` first.
 
-### Linting
+### Linting & type checks
 ```bash
-ruff check backend/app/
+# Backend (ruff 0.3.0+ — invoke via `python -m ruff` when not on PATH):
+python -m ruff check backend/app backend/scripts backend/tests
+python -m compileall -q backend/app backend/scripts backend/tests
+
+# Frontend:
+cd frontend && npm run lint    # tsc --noEmit
 ```
 
 ### Adding New Specialty

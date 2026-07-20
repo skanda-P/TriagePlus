@@ -7,7 +7,6 @@ Build FAISS index for MedDialog Q&A dataset.
 """
 
 import json
-import os
 import pickle
 import logging
 from pathlib import Path
@@ -17,6 +16,14 @@ import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
+
+# Shared word-boundary tokenizer, keeps BM25 keys in sync with the runtime
+# query tokenizer in app/core/unified_retrieval.py.
+import re
+
+
+def _tokenize(text):
+    return re.findall(r"\b\w+\b", (text or "").lower())
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -75,15 +82,16 @@ def load_meddialog() -> List[Dict]:
 
 
 def build_bm25_index(chunks: List[Dict]) -> BM25Okapi:
-    """Build BM25 index for keyword search."""
+    """Build BM25 index for keyword search.
+
+    Tokenize `full_text` (which already contains Description + Doctor); do
+    NOT prepend `patient_question` again — that double-counted patient tokens
+    in the doc-length normalization and biased BM25 toward patient-question
+    terms.
+    """
     logger.info("Building BM25 index...")
-    
-    # Tokenize documents
-    tokenized_docs = [
-        (chunk['full_text'].lower().split() + chunk['patient_question'].lower().split())
-        for chunk in chunks
-    ]
-    
+
+    tokenized_docs = [_tokenize(chunk.get("full_text", "")) for chunk in chunks]
     bm25 = BM25Okapi(tokenized_docs)
     logger.info(f"Built BM25 index with {len(chunks)} documents")
     return bm25
@@ -96,17 +104,25 @@ def build_faiss_index(chunks: List[Dict], model: SentenceTransformer) -> Tuple[f
     # Extract text for embedding
     texts = [chunk['full_text'] for chunk in chunks]
     
-    # Generate embeddings
+    # Generate embeddings — L2-normalize for cosine consistency with the query path.
     logger.info("Generating embeddings...")
-    embeddings = model.encode(texts, batch_size=32, show_progress_bar=True)
-    embeddings = embeddings.astype('float32')
+    embeddings = model.encode(
+        texts,
+        batch_size=32,
+        show_progress_bar=True,
+        normalize_embeddings=True,
+    )
+    embeddings = np.asarray(embeddings, dtype="float32")
     
     # Create FAISS index
     dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
+    # IndexFlatL2 does not implement add_with_ids - wrap with IndexIDMap so
+    # we can assign explicit positional ids matching the chunks list. Mirrors
+    # build_conversations_index.py for consistency across all three sources.
+    index = faiss.IndexIDMap(faiss.IndexFlatL2(dimension))
     ids = np.arange(len(chunks), dtype=np.int64)
     index.add_with_ids(embeddings, ids)
-    
+
     logger.info(f"Created FAISS index: {index.ntotal} vectors, {dimension}D")
     return index, embeddings
 
@@ -182,8 +198,8 @@ def main():
     logger.info("✓ MedDialog Q&A index built successfully!")
     logger.info(f"  - {len(chunks)} Q&A pairs indexed")
     logger.info(f"  - Embedding dimension: {embeddings.shape[1]}")
-    logger.info(f"  - Hybrid search: 0.5 BM25 + 0.5 Dense")
-    logger.info(f"  - Use case: Direct Q&A answering")
+    logger.info("  - Hybrid search: 0.5 BM25 + 0.5 Dense")
+    logger.info("  - Use case: Direct Q&A answering")
 
 
 if __name__ == '__main__':

@@ -1,34 +1,85 @@
 import asyncio
+import hmac
 import json
 import logging
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
+import os
+from pydantic import BaseModel, Field, field_validator
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Header
 from ..intake_fsm import complete_intake, get_session_state
-from ..db.supabase_client import get_supabase
-from ..core.triage_graph import build_graph
-from langgraph.checkpoint.sqlite import SqliteSaver
 
 router = APIRouter()
 
-# Global list of diagnostic clients
-_diagnostic_clients = []
+# Global set of diagnostic clients with lock for thread-safe access
+_diagnostic_clients = set()
+_diagnostic_clients_lock = asyncio.Lock()
+_MAX_DIAGNOSTIC_CLIENTS = 10
+
+
+class IntakeFormPayload(BaseModel):
+    type: str = "intake_form"
+    name: str = Field(..., min_length=1, max_length=100)
+    age: int = Field(..., ge=0, le=120)
+    gender: str = Field(..., pattern="^(male|female|other)$")
+    contact: str = Field(..., min_length=5, max_length=50)
+    
+    @field_validator("contact")
+    @classmethod
+    def validate_contact(cls, v: str) -> str:
+        # Basic email or phone validation
+        if "@" in v:
+            if not v.count("@") == 1 or "." not in v.split("@")[1]:
+                raise ValueError("Invalid email format")
+        else:
+            # Phone - basic check for digits
+            digits = "".join(c for c in v if c.isdigit())
+            if len(digits) < 7:
+                raise ValueError("Invalid phone number")
+        return v
+
+
+class ChatMessagePayload(BaseModel):
+    type: str = "message"
+    content: str = Field(..., min_length=1, max_length=5000)
+
+
+def verify_dev_password(token: str) -> bool:
+    """Verify developer password using constant-time comparison."""
+    dev_password = os.getenv("DEVELOPER_PASSWORD")
+    if not dev_password:
+        logging.warning("DEVELOPER_PASSWORD not set - diagnostics access disabled")
+        return False
+    return hmac.compare_digest(token, dev_password)
 
 
 @router.websocket("/api/v1/ws/diagnostics")
 async def diagnostics_websocket(
     websocket: WebSocket,
-    token: str = Query(..., description="Developer password for diagnostics access")
+    authorization: str = Header(None, description="Bearer token for diagnostics access")
 ):
     """WebSocket endpoint for diagnostic dashboard to receive real-time graph updates."""
-    # Verify token before accepting
-    dev_password = os.getenv("DEVELOPER_PASSWORD", "devpass")
-    if token != dev_password:
-        await websocket.close(code=1008, reason="Invalid token")
+    # Verify token before accepting - use Authorization header instead of query param
+    if not authorization or not authorization.startswith("Bearer "):
+        await websocket.close(code=1008, reason="Missing or invalid authorization header")
+        return
+    
+    token = authorization.split(" ", 1)[1]
+    try:
+        if not verify_dev_password(token):
+            await websocket.close(code=1008, reason="Invalid token")
+            return
+    except RuntimeError as e:
+        await websocket.close(code=1011, reason=str(e))
         return
         
+    # Enforce max concurrent diagnostic connections
+    async with _diagnostic_clients_lock:
+        if len(_diagnostic_clients) >= _MAX_DIAGNOSTIC_CLIENTS:
+            await websocket.close(code=1013, reason="Too many diagnostic connections")
+            return
+        _diagnostic_clients.add(websocket)
+
     await websocket.accept()
     
-    # Add to diagnostic clients list
-    _diagnostic_clients.append(websocket)
     try:
         # Send initial connection confirmation
         await websocket.send_text(json.dumps({
@@ -50,11 +101,10 @@ async def diagnostics_websocket(
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        print(f"Diagnostics WS error: {e}")
+        logging.warning(f"Diagnostics WS error: {e}")
     finally:
-        # Remove from diagnostic clients list
-        if websocket in _diagnostic_clients:
-            _diagnostic_clients.remove(websocket)
+        async with _diagnostic_clients_lock:
+            _diagnostic_clients.discard(websocket)
 
 
 async def ping_task(websocket: WebSocket):
@@ -68,20 +118,48 @@ async def ping_task(websocket: WebSocket):
         pass
 
 
-async def _process_graph_event(websocket: WebSocket, event: dict, msg: str):
-    """Process a single graph event and send appropriate responses to the client"""
-    # Broadcast to diagnostics - iterate over a copy to avoid mutation during iteration
-    diagnostic_clients_copy = list(_diagnostic_clients)
-    for diag_ws in diagnostic_clients_copy:
+# Sentinel message types that should NOT be echoed to the patient UI
+INTERNAL_SENTINELS = {
+    "SLOTS_OFFERED", "PROMPT_BOOKING", "PROMPT_DEPARTMENT", "PROMPT_DEPARTMENT_RETRY",
+    "SYSTEM_FALLBACK", "SLOT_CONFIRMED", "PAYMENT_SUCCESS", "EMERGENCY_TRIGGERED",
+    "DIAGNOSIS_EXPLANATION", "QUESTION",
+}
+
+
+def _is_sentinel(msg: str) -> bool:
+    if not isinstance(msg, str):
+        return False
+    # Match "SENTINEL: ..." or bare "SENTINEL"
+    return msg.split(":", 1)[0].strip() in INTERNAL_SENTINELS
+
+
+async def _broadcast_diagnostics(event: dict):
+    """Fire-and-forget broadcast to all diagnostic clients with a short timeout."""
+    async with _diagnostic_clients_lock:
+        clients = list(_diagnostic_clients)
+    if not clients:
+        return
+    # Send concurrently; individual failures are swallowed.
+    async def _send(ws):
         try:
-            await diag_ws.send_text(json.dumps({
-                "type": "diagnostic_update",
-                "node": list(event.keys())[0] if event else "unknown",
-                "state": event[list(event.keys())[0]] if event else {}
-            }))
+            await asyncio.wait_for(
+                ws.send_text(json.dumps({
+                    "type": "diagnostic_update",
+                    "node": list(event.keys())[0] if event else "unknown",
+                    "state": event[list(event.keys())[0]] if event else {}
+                })),
+                timeout=0.5,
+            )
         except Exception:
             pass
-                
+    await asyncio.gather(*[_send(ws) for ws in clients], return_exceptions=True)
+
+
+async def _process_graph_event(websocket: WebSocket, event: dict, msg: str):
+    """Process a single graph event and send appropriate responses to the client."""
+    # Broadcast to diagnostics (non-blocking)
+    asyncio.create_task(_broadcast_diagnostics(event))
+
     for node_name, node_state in event.items():
         if node_state.get("is_emergency"):
             await websocket.send_text(json.dumps({
@@ -106,10 +184,9 @@ async def _process_graph_event(websocket: WebSocket, event: dict, msg: str):
             }))
         
         if "messages" in node_state and len(node_state["messages"]) > 0:
-            # Send latest message
+            # Send latest message, but filter out internal sentinels
             last_msg = node_state["messages"][-1]
-            # Only send if it's a new message generated by the system, not the user's msg
-            if last_msg != msg and last_msg.strip():
+            if last_msg != msg and last_msg.strip() and not _is_sentinel(last_msg):
                 await websocket.send_text(json.dumps({
                     "type": "message",
                     "content": last_msg
@@ -144,17 +221,35 @@ async def chat_websocket(websocket: WebSocket, session_id: str):
     try:
         while True:
             data = await websocket.receive_text()
-            payload = json.loads(data)
+            
+            # Handle each message independently - don't let one bad message kill the connection
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                await websocket.send_text(json.dumps({"type": "error", "content": "Invalid JSON payload"}))
+                continue
             
             # Handle intake form
             if payload.get("type") == "intake_form":
-                patient_id = await complete_intake(
-                    session_id,
-                    payload.get("name"),
-                    int(payload.get("age")),
-                    payload.get("gender"),
-                    payload.get("contact")
-                )
+                try:
+                    intake_data = IntakeFormPayload(**payload)
+                except Exception as e:
+                    await websocket.send_text(json.dumps({"type": "error", "content": f"Invalid intake form: {str(e)}"}))
+                    continue
+                    
+                try:
+                    await complete_intake(
+                        session_id,
+                        intake_data.name,
+                        intake_data.age,
+                        intake_data.gender,
+                        intake_data.contact
+                    )
+                except Exception as e:
+                    logging.error(f"Intake completion error: {e}")
+                    await websocket.send_text(json.dumps({"type": "error", "content": "Failed to complete intake. Please try again."}))
+                    continue
+                    
                 await websocket.send_text(json.dumps({
                     "type": "message", 
                     "content": "Thank you. What brings you in today? (Or you can choose an option below)",
@@ -164,10 +259,16 @@ async def chat_websocket(websocket: WebSocket, session_id: str):
             
             # Message
             if payload.get("type") == "message":
-                msg = payload.get("content")
+                try:
+                    msg_data = ChatMessagePayload(**payload)
+                except Exception as e:
+                    await websocket.send_text(json.dumps({"type": "error", "content": f"Invalid message format: {str(e)}"}))
+                    continue
                 
-                # Check FSM state
-                state = get_session_state(session_id)
+                msg = msg_data.content
+                
+                # Check FSM state - wrap sync call in thread to avoid blocking event loop
+                state = await asyncio.to_thread(get_session_state, session_id)
                 if not state or state["state"] != "INITIAL_SYMPTOM":
                     await websocket.send_text(json.dumps({"type": "error", "content": "Please complete intake first."}))
                     continue
@@ -175,7 +276,7 @@ async def chat_websocket(websocket: WebSocket, session_id: str):
                 await websocket.send_text(json.dumps({"type": "typing"}))
                 
                 # Invoke LangGraph - checkpointer restores persisted state on subsequent messages
-                config = {"configurable": {"thread_id": session_id}}
+                config = {"configurable": {"thread_id": session_id}, "recursion_limit": 50}
                 
                 # Provide required fields for first message; checkpointer merges with persisted state on subsequent messages
                 input_state = {
@@ -201,7 +302,7 @@ async def chat_websocket(websocket: WebSocket, session_id: str):
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        print(f"Chat WS error: {e}")
+        logging.error(f"Chat WS error: {e}")
         try:
             await websocket.send_text(json.dumps({"type": "error", "content": "An error occurred."}))
         except Exception:
@@ -214,6 +315,3 @@ async def chat_websocket(websocket: WebSocket, session_id: str):
             pass
         except Exception:
             pass
-
-
-import os

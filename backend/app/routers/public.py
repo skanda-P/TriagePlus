@@ -1,20 +1,22 @@
-from fastapi import APIRouter, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Query, HTTPException
+from pydantic import BaseModel, Field
 from typing import Optional
 import asyncio
 from ..db.supabase_client import get_supabase
+from ..core.error_handler import with_error_handling
 
 router = APIRouter(prefix="/api/v1", tags=["public"])
 
 
 class FeedbackPayload(BaseModel):
-    doctor_id: str
+    doctor_id: str = Field(..., min_length=1)
     appointment_id: Optional[str] = None
-    stars: int
-    comment: Optional[str] = None
+    stars: int = Field(..., ge=1, le=5)
+    comment: Optional[str] = Field(None, max_length=2000)
 
 
 @router.get("/specialties")
+@with_error_handling
 async def get_specialties():
     supabase = get_supabase()
     res = await asyncio.to_thread(
@@ -24,6 +26,7 @@ async def get_specialties():
 
 
 @router.get("/doctors")
+@with_error_handling
 async def get_doctors(
     specialty_id: Optional[str] = None,
     limit: int = Query(20, ge=1, le=100),
@@ -39,6 +42,7 @@ async def get_doctors(
 
 
 @router.post("/patient/feedback")
+@with_error_handling
 async def submit_feedback(payload: FeedbackPayload):
     supabase = get_supabase()
     
@@ -48,7 +52,7 @@ async def submit_feedback(payload: FeedbackPayload):
             supabase.table("appointment").select("id").eq("id", payload.appointment_id).execute
         )
         if not appt_check.data:
-            return {"status": "error", "message": "Appointment not found"}
+            raise HTTPException(status_code=404, detail="Appointment not found")
     
     res = await asyncio.to_thread(
         supabase.table("feedback").insert({

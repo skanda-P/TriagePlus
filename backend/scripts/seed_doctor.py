@@ -7,7 +7,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 backend_dir = os.path.dirname(current_dir)
 load_dotenv(os.path.join(backend_dir, ".env"))
 
-from app.db.supabase_client import get_supabase
+from app.db.supabase_client import get_supabase  # noqa: E402  (import after load_dotenv so .env is in place)
 
 async def seed():
     supabase = get_supabase()

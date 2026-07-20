@@ -4,7 +4,7 @@ Designed to fill all required slots sequentially: symptoms → severity → dura
 """
 
 import logging
-from typing import Dict, List
+from typing import Dict, Optional
 from enum import Enum
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,11 @@ class FallbackSlot(Enum):
 
 
 class FallbackConversationManager:
-    """Manages hardcoded conversation flow when LLM unavailable."""
+    """Manages hardcoded conversation flow when LLM unavailable.
+    
+    Instantiated per-session (not a global singleton) to avoid cross-session
+    state pollution.
+    """
     
     # Templated questions that work for ANY symptom/condition
     UNIVERSAL_QUESTIONS = {
@@ -146,7 +150,7 @@ class FallbackConversationManager:
             'can_diagnose': all_filled
         }
     
-    def generate_diagnosis(self, symptoms: str = None) -> Dict:
+    def generate_diagnosis(self, symptoms: Optional[str] = None) -> Dict:
         """
         Generate generic diagnosis based on symptoms.
         
@@ -178,8 +182,10 @@ class FallbackConversationManager:
         logger.info(f"Generated fallback diagnosis: {diagnosis}")
         return diagnosis
     
-    def _categorize_symptoms(self, symptoms: str) -> str:
+    def _categorize_symptoms(self, symptoms: Optional[str]) -> str:
         """Categorize symptoms using simple keyword matching."""
+        if not symptoms:
+            return 'general'
         symptoms_lower = symptoms.lower()
         
         # Respiratory
@@ -215,16 +221,16 @@ class FallbackConversationManager:
     def _map_category_to_department(self, category: str) -> str:
         """Map symptom category to medical department."""
         mapping = {
-            'respiratory': 'Pulmonology',
+            'respiratory': 'Respiratory',
             'gastrointestinal': 'Gastroenterology',
             'cardiac': 'Cardiology',
             'dermatological': 'Dermatology',
             'neurological': 'Neurology',
             'musculoskeletal': 'Orthopedics',
-            'infectious': 'Internal Medicine',
-            'general': 'General Medicine'
+            'infectious': 'General Medicine / Internal Medicine',
+            'general': 'General Medicine / Internal Medicine'
         }
-        return mapping.get(category, 'General Medicine')
+        return mapping.get(category, 'General Medicine / Internal Medicine')
     
     def _estimate_triage_level(self) -> int:
         """
@@ -241,7 +247,7 @@ class FallbackConversationManager:
                 return 3  # SEMI_URGENT
             else:
                 return 4  # NON_URGENT
-        except:
+        except Exception:
             return 3  # Default to semi-urgent
     
     def reset(self):
@@ -265,13 +271,6 @@ class FallbackConversationManager:
         }
 
 
-# Singleton instance
-_fallback_manager = None
-
-
-def get_fallback_manager() -> FallbackConversationManager:
-    """Get or create fallback manager singleton."""
-    global _fallback_manager
-    if _fallback_manager is None:
-        _fallback_manager = FallbackConversationManager()
-    return _fallback_manager
+# REMOVED: Global singleton `_fallback_manager` and `get_fallback_manager()`.
+# The fallback manager is now instantiated per-session by the graph nodes
+# that need it, avoiding cross-session state pollution.

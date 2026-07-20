@@ -1,12 +1,11 @@
-import json
 import sqlite3
 import os
 import asyncio
 from typing import Optional
-from .db.supabase_client import get_supabase
+from .db.supabase_client import get_anon_supabase
 
 # Simple SQLite store for fast intake FSM state tracking
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../sessions.db"))
+DB_PATH = os.getenv("INTAKE_SESSIONS_DB_PATH", os.path.abspath(os.path.join(os.path.dirname(__file__), "../../sessions.db")))
 
 
 def _get_conn():
@@ -30,6 +29,7 @@ def init_db():
 
 
 def get_session_state(session_id: str):
+    """Sync DB read. Call via `await asyncio.to_thread(get_session_state, ...)` in async code."""
     conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute('SELECT state, patient_id FROM intake_sessions WHERE session_id = ?', (session_id,))
@@ -41,6 +41,7 @@ def get_session_state(session_id: str):
 
 
 def update_fsm_session(session_id: str, state: str, patient_id: Optional[str] = None):
+    """Sync DB write. Call via `await asyncio.to_thread(update_fsm_session, ...)` in async code."""
     conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute('''
@@ -62,9 +63,9 @@ async def complete_intake(
     contact: str
 ) -> Optional[str]:
     """Runs once, right after the miniform is submitted. Returns patient_id."""
-    
-    async def _inner():
-        supabase = get_supabase()
+
+    def _inner():
+        supabase = get_anon_supabase()
         
         # Check if patient exists
         existing = supabase.table("patient").select("id").eq("contact", contact)\

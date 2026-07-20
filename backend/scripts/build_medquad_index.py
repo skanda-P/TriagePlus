@@ -1,272 +1,303 @@
 #!/usr/bin/env python3
 """
-Build FAISS indices for MedQuAD with proper chunking strategy.
-- Atomic QA pairs as chunks
-- Long answers split by paragraph with parent-child linking
-- Metadata preservation (focus_area, question_type, source)
+Build FAISS index for MedQuAD.
+
+- Atomic QA pairs as chunks; long answers split by paragraph with parent-child
+  linking.
+- Metadata preserved (focus_area, question_type, source).
+- Embeddings: microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract,
+  L2-normalized at encode time so the runtime's normalize-on-query path lands
+  in a consistent cosine-like similarity space.
+- Hybrid search weights: 0.3 BM25 + 0.7 Dense.
+
+Output files (written into backend/data/faiss/medquad/, matches the runtime
+reader in app/core/unified_retrieval._load_medquad_index):
+  - medquad.index           (raw faiss index, IndexIDMap(IndexFlatL2))
+  - medquad_metadata.pkl    ({chunks, embeddings, total_chunks, model_name,
+                              dimension, hybrid_weights})
+  - medquad_bm25.pkl        (BM25Okapi over chunk answer text)
+  - medquad_summary.json    (human-readable summary, not read at runtime)
 """
 
-import os
 import csv
 import json
+import logging
 import pickle
-from typing import List, Dict, Tuple
-from pathlib import Path
 import sys
-from rank_bm25 import BM25Okapi
+from pathlib import Path
+from typing import TYPE_CHECKING, Dict, List, Tuple
 
-# Setup paths
+import numpy as np
+from rank_bm25 import BM25Okapi
+from sentence_transformers import SentenceTransformer
+
+import re
+
+if TYPE_CHECKING:
+    import faiss  # noqa: F401  (type-only; real import is local in functions)
+
+
+def _tokenize(text):
+    """Shared word-boundary tokenizer; matches runtime query tokenization."""
+    return re.findall(r"\b\w+\b", (text or "").lower())
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Directories - resolved relative to backend/ so the same script works whether
+# invoked from backend/ or repo root.
 BACKEND_DIR = Path(__file__).parent.parent
 DATA_DIR = BACKEND_DIR / "data"
 FAISS_DIR = DATA_DIR / "faiss"
-MODEL_DIR = BACKEND_DIR / "models"
+MEDQUAD_INDEX_DIR = FAISS_DIR / "medquad"
 
-os.makedirs(FAISS_DIR, exist_ok=True)
-os.makedirs(MODEL_DIR, exist_ok=True)
+# Source data
+MEDQUAD_CSV = DATA_DIR / "medquad.csv"
+
+# Model
+EMBEDDING_MODEL = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract"
+
+# Hybrid search weights - documented in README and consumed by the runtime's
+# retrieve_medquad() call (which hard-codes 0.3/0.7); stored in metadata for
+# human readability only.
+HYBRID_WEIGHTS = {"bm25": 0.3, "dense": 0.7}
+
 
 def chunk_answer_by_paragraph(answer: str, max_tokens: int = 500) -> List[Tuple[str, int]]:
+    """Split long answers by paragraph, keeping track of chunk indices.
+
+    Returns list of (paragraph_text, paragraph_index) tuples. Short answers
+    return a single (full_answer, 0) tuple.
     """
-    Split long answers by paragraph while keeping track of chunk indices.
-    Returns list of (paragraph_text, paragraph_index) tuples.
-    
-    Args:
-        answer: Full answer text
-        max_tokens: Approx token threshold (char count / 4 as proxy)
-    
-    Returns:
-        List of (paragraph_text, paragraph_index) if answer is long,
-        or single-item list with full answer if short
-    """
-    char_threshold = max_tokens * 4  # Rough token-to-char conversion
-    
+    char_threshold = max_tokens * 4  # rough token -> char proxy
+
     if len(answer) <= char_threshold:
         return [(answer, 0)]
-    
-    # Split by double newlines (paragraph boundaries)
-    paragraphs = [p.strip() for p in answer.split('\n\n') if p.strip()]
-    
+
+    paragraphs = [p.strip() for p in answer.split("\n\n") if p.strip()]
+
     if len(paragraphs) <= 1:
-        # No clear paragraph structure, split into sentences
-        sentences = [s.strip() for s in answer.split('. ') if s.strip()]
-        result = []
-        current_chunk = []
+        # No clear paragraph structure - fall back to sentence splitting.
+        sentences = [s.strip() for s in answer.split(". ") if s.strip()]
+        result: List[Tuple[str, int]] = []
+        current_chunk: List[str] = []
         current_length = 0
-        
-        for i, sentence in enumerate(sentences):
-            sentence = sentence if sentence.endswith('.') else sentence + '.'
+
+        for sentence in sentences:
+            sentence = sentence if sentence.endswith(".") else sentence + "."
             if current_length + len(sentence) <= char_threshold:
                 current_chunk.append(sentence)
                 current_length += len(sentence)
             else:
                 if current_chunk:
-                    result.append((' '.join(current_chunk), len(result)))
+                    result.append((" ".join(current_chunk), len(result)))
                 current_chunk = [sentence]
                 current_length = len(sentence)
-        
+
         if current_chunk:
-            result.append((' '.join(current_chunk), len(result)))
-        
+            result.append((" ".join(current_chunk), len(result)))
+
         return result if result else [(answer, 0)]
-    else:
-        # Use existing paragraphs
-        return [(para, i) for i, para in enumerate(paragraphs)]
+
+    return [(para, i) for i, para in enumerate(paragraphs)]
 
 
-def load_medquad_csv(csv_path: str) -> List[Dict]:
+def load_medquad_csv(csv_path: Path) -> List[Dict]:
+    """Load MedQuAD CSV into chunk dicts with metadata.
+
+    CSV columns: question, answer, source, focus_area.
     """
-    Load MedQuAD from CSV and create chunks with metadata.
-    
-    CSV columns: question, answer, source, focus_area
-    """
-    chunks = []
-    
-    if not os.path.exists(csv_path):
-        print(f"ERROR: CSV file not found at {csv_path}")
+    chunks: List[Dict] = []
+
+    if not csv_path.exists():
+        logger.error(f"CSV file not found: {csv_path}")
         return chunks
-    
-    print(f"Loading MedQuAD from {csv_path}...")
-    
-    with open(csv_path, 'r', encoding='utf-8') as f:
+
+    logger.info(f"Loading MedQuAD from {csv_path}")
+    with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        
-        if reader.fieldnames != ['question', 'answer', 'source', 'focus_area']:
-            print(f"WARNING: CSV columns are {reader.fieldnames}, expected ['question', 'answer', 'source', 'focus_area']")
-        
+
+        if reader.fieldnames != ["question", "answer", "source", "focus_area"]:
+            logger.warning(
+                f"CSV columns are {reader.fieldnames}, "
+                "expected ['question', 'answer', 'source', 'focus_area']"
+            )
+
         for row_idx, row in enumerate(reader):
-            question = row.get('question', '').strip()
-            answer = row.get('answer', '').strip()
-            source = row.get('source', '').strip()
-            focus_area = row.get('focus_area', '').strip()
-            
+            question = row.get("question", "").strip()
+            answer = row.get("answer", "").strip()
+            source = row.get("source", "").strip()
+            focus_area = row.get("focus_area", "").strip()
+
             if not question or not answer:
-                print(f"WARNING: Row {row_idx} missing question or answer, skipping")
+                logger.warning(f"Row {row_idx} missing question or answer, skipping")
                 continue
-            
-            # Infer question_type from question text
+
             question_lower = question.lower()
-            if any(word in question_lower for word in ['what is', 'what are', 'how does', 'why']):
-                question_type = 'symptoms'
-            elif any(word in question_lower for word in ['treat', 'cure', 'medication', 'medicine', 'therapy']):
-                question_type = 'treatment'
-            elif any(word in question_lower for word in ['prognosis', 'outlook', 'survival', 'life expectancy']):
-                question_type = 'prognosis'
-            elif any(word in question_lower for word in ['cause', 'risk', 'susceptibility', 'who']):
-                question_type = 'susceptibility'
+            if any(w in question_lower for w in ["what is", "what are", "how does", "why"]):
+                question_type = "symptoms"
+            elif any(w in question_lower for w in
+                      ["treat", "cure", "medication", "medicine", "therapy"]):
+                question_type = "treatment"
+            elif any(w in question_lower for w in
+                      ["prognosis", "outlook", "survival", "life expectancy"]):
+                question_type = "prognosis"
+            elif any(w in question_lower for w in
+                      ["cause", "risk", "susceptibility", "who"]):
+                question_type = "susceptibility"
             else:
-                question_type = 'general'
-            
-            # Split long answers by paragraph
+                question_type = "general"
+
             answer_chunks = chunk_answer_by_paragraph(answer)
-            
             for chunk_text, chunk_idx in answer_chunks:
-                chunk = {
-                    'question': question,
-                    'answer_chunk': chunk_text,
-                    'source': source,
-                    'focus_area': focus_area,
-                    'question_type': question_type,
-                    'chunk_index': chunk_idx,
-                    'total_chunks': len(answer_chunks),
-                    'full_answer': answer if chunk_idx == 0 else None  # Store full answer in first chunk
-                }
-                chunks.append(chunk)
-    
-    print(f"Loaded {len(chunks)} chunks from {row_idx + 1} QA pairs")
+                chunks.append({
+                    "question": question,
+                    "answer_chunk": chunk_text,
+                    "source": source,
+                    "focus_area": focus_area,
+                    "question_type": question_type,
+                    "chunk_index": chunk_idx,
+                    "total_chunks": len(answer_chunks),
+                    # Store the full answer only on the first chunk so the
+                    # runtime can use it as additional context if desired.
+                    "full_answer": answer if chunk_idx == 0 else None,
+                })
+
+    logger.info(f"Loaded {len(chunks)} chunks")
     return chunks
 
 
-def build_faiss_index(chunks: List[Dict], model_name: str = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract"):
-    """Build FAISS index with embeddings and metadata."""
-    from langchain_community.embeddings import HuggingFaceEmbeddings
-    from langchain_community.vectorstores import FAISS
-    from langchain_core.documents import Document
-    
+def build_faiss_index(
+    chunks: List[Dict],
+    model: SentenceTransformer,
+) -> Tuple["faiss.Index", np.ndarray]:
+    """Embed chunks with PubMedBERT (L2-normalized) and build an IDMap+FlatL2 index.
+
+    Mirrors the strategy used by build_conversations_index.py so all three
+    indices share the same on-disk format and ID semantics.
+    """
+    import faiss  # local import so module import doesn't hard-require faiss
+
     if not chunks:
-        print("ERROR: No chunks to index")
-        return None
-    
-    print(f"Building embeddings with {model_name}...")
-    
-    # Initialize embeddings
-    try:
-        embeddings = HuggingFaceEmbeddings(
-            model_name=model_name,
-            model_kwargs={'device': 'cpu'}
-        )
-    except Exception as e:
-        print(f"ERROR initializing embeddings: {e}")
-        return None
-    
-    # Create documents with metadata
-    documents = []
-    for chunk in chunks:
-        doc = Document(
-            page_content=chunk['answer_chunk'],
-            metadata={
-                'question': chunk['question'],
-                'source': chunk['source'],
-                'focus_area': chunk['focus_area'],
-                'question_type': chunk['question_type'],
-                'chunk_index': chunk['chunk_index'],
-                'total_chunks': chunk['total_chunks'],
-                'full_answer': chunk.get('full_answer', '')
-            }
-        )
-        documents.append(doc)
-    
-    print(f"Creating FAISS index with {len(documents)} documents...")
-    
-    try:
-        index = FAISS.from_documents(documents, embeddings)
-        print(f"FAISS index created successfully with {index.index.ntotal} vectors")
-        return index
-    except Exception as e:
-        print(f"ERROR creating FAISS index: {e}")
-        return None
+        logger.error("No chunks to index")
+        return None, None
+
+    logger.info(f"Encoding {len(chunks)} chunks with {EMBEDDING_MODEL}...")
+    texts = [c["answer_chunk"] for c in chunks]
+    embeddings = np.asarray(
+        model.encode(
+            texts,
+            batch_size=32,
+            show_progress_bar=True,
+            normalize_embeddings=True,  # L2-normalized -> cosine ~ 1/(1+L2)
+        ),
+        dtype="float32",
+    )
+
+    dimension = embeddings.shape[1]
+    index = faiss.IndexIDMap(faiss.IndexFlatL2(dimension))
+    ids = np.arange(len(chunks), dtype=np.int64)
+    index.add_with_ids(embeddings, ids)
+
+    logger.info(f"Built FAISS index: {index.ntotal} vectors, {dimension}D")
+    return index, embeddings
 
 
-def save_index_metadata(chunks: List[Dict], output_dir: str):
-    """Save metadata about the index for validation."""
+def build_bm25_index(chunks: List[Dict]) -> BM25Okapi:
+    """BM25 over the chunk answer text. Uses the shared word-boundary tokenizer
+    so build-time tokens match the runtime query tokenizer."""
+    texts = [c.get("answer_chunk", c.get("answer", "")) for c in chunks]
+    tokenized = [_tokenize(t) for t in texts]
+    return BM25Okapi(tokenized)
+
+
+def save_index(
+    index: "faiss.Index",
+    bm25: BM25Okapi,
+    chunks: List[Dict],
+    embeddings: np.ndarray,
+):
+    """Write all artifact files the runtime expects, plus a human summary."""
+    import faiss
+
+    MEDQUAD_INDEX_DIR.mkdir(parents=True, exist_ok=True)
+
+    faiss_path = MEDQUAD_INDEX_DIR / "medquad.index"
+    faiss.write_index(index, str(faiss_path))
+    logger.info(f"Saved FAISS index to {faiss_path}")
+
+    bm25_path = MEDQUAD_INDEX_DIR / "medquad_bm25.pkl"
+    with open(bm25_path, "wb") as f:
+        pickle.dump(bm25, f)
+    logger.info(f"Saved BM25 index to {bm25_path}")
+
     metadata = {
-        'total_chunks': len(chunks),
-        'embedding_model': 'microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract',
-        'embedding_dim': 768,
-        'chunking_strategy': 'atomic_qa_pairs_with_paragraph_splitting',
-        'question_types': list(set(c['question_type'] for c in chunks)),
-        'sources': list(set(c['source'] for c in chunks)),
-        'focus_areas': list(set(c['focus_area'] for c in chunks))
+        "chunks": chunks,
+        "embeddings": embeddings,
+        "total_chunks": len(chunks),
+        "model_name": EMBEDDING_MODEL,
+        "dimension": embeddings.shape[1] if embeddings.size > 0 else 0,
+        "hybrid_weights": HYBRID_WEIGHTS,
     }
-    
-    metadata_path = os.path.join(output_dir, 'metadata.json')
-    with open(metadata_path, 'w') as f:
-        json.dump(metadata, f, indent=2)
-    
-    print(f"Saved index metadata to {metadata_path}")
+    metadata_path = MEDQUAD_INDEX_DIR / "medquad_metadata.pkl"
+    with open(metadata_path, "wb") as f:
+        pickle.dump(metadata, f)
+    logger.info(f"Saved metadata to {metadata_path}")
+
+    summary = {
+        "total_chunks": len(chunks),
+        "embedding_dimension": metadata["dimension"],
+        "embedding_model": EMBEDDING_MODEL,
+        "chunking_strategy": "atomic_qa_pairs_with_paragraph_splitting",
+        "hybrid_weights": HYBRID_WEIGHTS,
+        "question_types": list(set(c["question_type"] for c in chunks)),
+        "sources": list(set(c["source"] for c in chunks)),
+        "focus_areas": list(set(c["focus_area"] for c in chunks)),
+    }
+    summary_path = MEDQUAD_INDEX_DIR / "medquad_summary.json"
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    logger.info(f"Saved summary to {summary_path}")
 
 
 def main():
-    print("=" * 80)
-    print("MedQuAD FAISS Index Builder")
-    print("=" * 80)
-    
-    # Paths
-    csv_path = DATA_DIR / "medquad.csv"
-    medquad_index_dir = FAISS_DIR / "medquad"
-    
-    os.makedirs(medquad_index_dir, exist_ok=True)
-    
-    # Load MedQuAD
-    chunks = load_medquad_csv(str(csv_path))
-    
+    logger.info("=" * 80)
+    logger.info("MedQuAD FAISS Index Builder")
+    logger.info("=" * 80)
+
+    if not MEDQUAD_CSV.exists():
+        logger.error(f"MedQuAD CSV not found: {MEDQUAD_CSV}")
+        sys.exit(1)
+
+    chunks = load_medquad_csv(MEDQUAD_CSV)
     if not chunks:
-        print("ERROR: Failed to load MedQuAD data")
+        logger.error("Failed to load MedQuAD data")
         sys.exit(1)
-    
-    # Build index
-    index = build_faiss_index(chunks)
-    
-    if not index:
-        print("ERROR: Failed to build FAISS index")
+
+    logger.info(f"Loading embedding model: {EMBEDDING_MODEL}")
+    model = SentenceTransformer(EMBEDDING_MODEL)
+
+    index, embeddings = build_faiss_index(chunks, model)
+    if index is None:
+        logger.error("Failed to build FAISS index")
         sys.exit(1)
-    
-    # Verify index
-    if index.index.ntotal < 1000:
-        print(f"WARNING: Index has only {index.index.ntotal} vectors (expected 1000+)")
+
+    if index.ntotal < 1000:
+        logger.warning(f"Index has only {index.ntotal} vectors (expected 1000+)")
     else:
-        print(f"SUCCESS: Index has {index.index.ntotal} vectors (target: 1000+)")
-    
-    # Save index
-    print(f"Saving index to {medquad_index_dir}...")
-    index.save_local(str(medquad_index_dir))
-    
-    # Save metadata (for unified_retrieval)
-    metadata = {
-        'chunks': chunks,
-        'total_chunks': len(chunks),
-        'embedding_model': 'microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract',
-        'dimension': 768,
-    }
-    metadata_path = medquad_index_dir / "medquad_metadata.pkl"
-    with open(metadata_path, 'wb') as f:
-        pickle.dump(metadata, f)
-    print(f"Saved metadata to {metadata_path}")
-    
-    # Build and save BM25 index
-    print("Building BM25 index...")
-    texts = [c.get('answer_chunk', c.get('answer', '')) for c in chunks]
-    tokenized = [t.lower().split() for t in texts]
-    bm25 = BM25Okapi(tokenized)
-    bm25_path = medquad_index_dir / "medquad_bm25.pkl"
-    with open(bm25_path, 'wb') as f:
-        pickle.dump(bm25, f)
-    print(f"Saved BM25 index to {bm25_path}")
-    
-    # Save metadata.json for validation
-    save_index_metadata(chunks, str(medquad_index_dir))
-    
-    print("\n" + "=" * 80)
-    print("MedQuAD index built successfully!")
-    print("=" * 80)
+        logger.info(f"SUCCESS: Index has {index.ntotal} vectors")
+
+    bm25 = build_bm25_index(chunks)
+    save_index(index, bm25, chunks, embeddings)
+
+    logger.info("=" * 80)
+    logger.info("MedQuAD index built successfully!")
+    logger.info(f"  - {len(chunks)} chunks indexed")
+    logger.info(f"  - Embedding dimension: {embeddings.shape[1]}")
+    logger.info(f"  - Hybrid search: {HYBRID_WEIGHTS['bm25']} BM25 + {HYBRID_WEIGHTS['dense']} Dense")
+    logger.info(f"  - Output dir: {MEDQUAD_INDEX_DIR}")
+    logger.info("=" * 80)
+
 
 if __name__ == "__main__":
     main()
