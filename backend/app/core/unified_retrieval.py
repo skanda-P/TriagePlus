@@ -11,6 +11,7 @@ Parallel search across all three indices with result merging.
 import os
 import pickle
 import logging
+import threading
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 import numpy as np
@@ -19,7 +20,6 @@ import faiss
 from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Directories
@@ -293,11 +293,14 @@ class UnifiedRetriever:
 
 # Singleton instance
 _retriever_instance: Optional[UnifiedRetriever] = None
+_retriever_lock = threading.Lock()
 
 
 def get_unified_retriever() -> UnifiedRetriever:
-    """Get singleton retriever instance."""
+    """Get singleton retriever instance (thread-safe)."""
     global _retriever_instance
     if _retriever_instance is None:
-        _retriever_instance = UnifiedRetriever()
+        with _retriever_lock:
+            if _retriever_instance is None:
+                _retriever_instance = UnifiedRetriever()
     return _retriever_instance

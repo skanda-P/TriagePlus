@@ -1,14 +1,13 @@
-import React, { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Database, Search, ArrowRight, Zap, RefreshCw, ChevronDown, ChevronRight, Activity, Clock, Lock } from 'lucide-react';
-import { buildWsUrl } from '../utils/api';
+import { Database, Search, RefreshCw, ChevronDown, ChevronRight, Activity, Clock, Lock } from 'lucide-react';
+import { buildDiagnosticsWsUrl } from '../utils/api';
 
 interface DiagnosticEvent {
   node: string;
   state: {
     session_id: string;
     present_symptoms: string[];
-    absent_symptoms: string[];
     is_emergency: boolean;
     final_diagnosis: string | null;
     department: string | null;
@@ -22,49 +21,60 @@ interface DiagnosticEvent {
 const Collapsible = ({ title, children, defaultOpen = false }: { title: React.ReactNode, children: React.ReactNode, defaultOpen?: boolean }) => {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="border border-frost-gray rounded-cards-sm overflow-hidden bg-white mb-3">
-      <button 
-        onClick={() => setOpen(!open)} 
-        className="w-full flex items-center justify-between p-3 bg-cloud-gray hover:bg-slate-100 transition-colors text-left"
+    <div className="border border-frost-gray rounded-cards-sm overflow-hidden bg-white mb-3 dark:border-gray-700 dark:bg-slate-800">
+      <button
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="w-full flex items-center justify-between p-3 bg-cloud-gray hover:bg-slate-100 transition-colors text-left dark:bg-slate-700 dark:hover:bg-slate-600"
       >
-        <span className="font-semibold text-sm text-charcoal flex items-center gap-2">{title}</span>
+        <span className="font-semibold text-sm text-charcoal flex items-center gap-2 dark:text-white">{title}</span>
         {open ? <ChevronDown className="w-4 h-4 text-ash" /> : <ChevronRight className="w-4 h-4 text-ash" />}
       </button>
-      {open && <div className="p-4 border-t border-frost-gray">{children}</div>}
+      {open && <div className="p-4 border-t border-frost-gray dark:border-gray-700">{children}</div>}
     </div>
   );
 };
 
+const MAX_EVENTS = 100;
+
 export default function RagMonitor() {
   const [events, setEvents] = useState<DiagnosticEvent[]>([]);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
-  
+  const [token, setToken] = useState<string>(() => sessionStorage.getItem('diag_token') || '');
+  const [tokenInput, setTokenInput] = useState<string>('');
+  const [showTokenPrompt, setShowTokenPrompt] = useState<boolean>(!token);
+
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollTimerRef = useRef<number | null>(null);
 
   const connect = () => {
+    if (!token) {
+      setShowTokenPrompt(true);
+      return;
+    }
     setStatus('connecting');
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    const baseUrl = import.meta.env.VITE_WS_BASE_URL 
-      ? `${import.meta.env.VITE_WS_BASE_URL}/api/v1/ws/diagnostics`
-      : `${protocol}//${host}/api/v1/ws/diagnostics`;
-
-    const ws = new WebSocket(baseUrl);
+    // Close any existing socket before opening a new one
+    if (wsRef.current) {
+      try { wsRef.current.close(); } catch { /* ignore */ }
+    }
+    const url = buildDiagnosticsWsUrl(token);
+    const ws = new WebSocket(url);
     wsRef.current = ws;
 
-    ws.onopen = () => {
-      setStatus('connected');
-    };
-    ws.onclose = () => {
-      setStatus('disconnected');
-    };
+    ws.onopen = () => setStatus('connected');
+    ws.onclose = () => setStatus('disconnected');
+    ws.onerror = () => setStatus('disconnected');
     ws.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
         if (data.type === 'diagnostic_update') {
-          setEvents((prev) => [...prev, data]);
-          setTimeout(() => {
+          setEvents((prev) => {
+            const next = [...prev, data];
+            return next.length > MAX_EVENTS ? next.slice(next.length - MAX_EVENTS) : next;
+          });
+          if (scrollTimerRef.current) window.clearTimeout(scrollTimerRef.current);
+          scrollTimerRef.current = window.setTimeout(() => {
             if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
           }, 100);
         }
@@ -75,11 +85,49 @@ export default function RagMonitor() {
   };
 
   useEffect(() => {
-    connect();
+    if (token) connect();
     return () => {
-      if (wsRef.current) wsRef.current.close();
+      if (wsRef.current) {
+        try { wsRef.current.close(); } catch { /* ignore */ }
+      }
+      if (scrollTimerRef.current) window.clearTimeout(scrollTimerRef.current);
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const handleSubmitToken = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tokenInput.trim()) return;
+    setToken(tokenInput.trim());
+    sessionStorage.setItem('diag_token', tokenInput.trim());
+    setShowTokenPrompt(false);
+  };
+
+  if (showTokenPrompt) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-lavender-mist dark:bg-slate-900">
+        <form onSubmit={handleSubmitToken} className="bg-white dark:bg-slate-800 p-6 rounded-cards border border-frost-gray dark:border-gray-700 max-w-sm w-full">
+          <div className="flex items-center gap-2 mb-3">
+            <Lock className="w-5 h-5 text-indigo-bloom" />
+            <h2 className="text-lg font-bold text-charcoal dark:text-white">Diagnostics Access</h2>
+          </div>
+          <p className="text-xs text-slate-muted dark:text-ash mb-4">Enter the developer password to access the diagnostics monitor.</p>
+          <input
+            type="password"
+            value={tokenInput}
+            onChange={(e) => setTokenInput(e.target.value)}
+            placeholder="Developer password"
+            autoFocus
+            className="w-full rounded-md border border-ash dark:border-gray-600 bg-transparent px-3 py-2 text-sm text-charcoal dark:text-white focus:outline-none focus:ring-2 focus:ring-canopy-green/50 mb-3"
+          />
+          <button type="submit" className="w-full py-2 bg-canopy-green hover:bg-leaf-bright text-white rounded-md text-sm font-semibold">
+            Connect
+          </button>
+          <Link to="/" className="block text-center mt-3 text-xs text-slate-muted hover:text-charcoal dark:hover:text-white">← Back to home</Link>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col bg-lavender-mist dark:bg-slate-900 transition-colors duration-300">
@@ -144,7 +192,7 @@ export default function RagMonitor() {
                 <Collapsible title={<><Database className="w-4 h-4" /> Retrieved RAG Chunks ({chunks.length})</>}>
                   <div className="flex flex-col gap-3">
                     {chunks.map((chunk, j) => (
-                      <div key={j} className="bg-cloud-gray p-3 rounded-md text-sm">
+                      <div key={j} className="bg-cloud-gray p-3 rounded-md text-sm dark:bg-slate-900">
                         <p className="text-graphite font-mono text-xs whitespace-pre-wrap">{chunk}</p>
                       </div>
                     ))}

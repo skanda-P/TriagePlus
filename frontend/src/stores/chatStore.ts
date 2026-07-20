@@ -29,8 +29,11 @@ interface ChatStore {
   sessionMeta:     SessionMeta;
   isTyping:        boolean;
   emergencyClosed: boolean;
+  streamingMessageId: string | null;  // Track which message is being streamed
   addMessage:      (msg: Omit<Message, 'id' | 'timestamp'>) => void;
   appendMessageChunk: (role: MessageRole, chunk: string) => void;
+  startStreaming: (role: MessageRole) => void;
+  endStreaming: () => void;
   setFsmState:     (state: FsmState) => void;
   setSessionMeta:  (meta: Partial<SessionMeta>) => void;
   setIsTyping:     (v: boolean) => void;
@@ -45,6 +48,7 @@ export const useChatStore = create<ChatStore>((set) => ({
   sessionMeta:     {},
   isTyping:        false,
   emergencyClosed: false,
+  streamingMessageId: null,
   addMessage: (msg) => set((s) => {
     const lastMsg = s.messages[s.messages.length - 1];
     if (lastMsg && lastMsg.role === msg.role && lastMsg.content === msg.content) {
@@ -52,23 +56,28 @@ export const useChatStore = create<ChatStore>((set) => ({
     }
     return { messages: [...s.messages, { ...msg, id: generateId(), timestamp: Date.now() }] };
   }),
-  appendMessageChunk: (role, chunk) => set((s) => {
-    const lastMsg = s.messages[s.messages.length - 1];
-    if (lastMsg && lastMsg.role === role) {
-      const updatedMessages = [...s.messages];
-      updatedMessages[updatedMessages.length - 1] = {
-        ...lastMsg,
-        content: lastMsg.content + chunk
-      };
-      return { messages: updatedMessages };
-    }
-    return { messages: [...s.messages, { id: generateId(), role, content: chunk, timestamp: Date.now() }] };
+  startStreaming: (role) => set((s) => {
+    const newMsg = { id: generateId(), role, content: '', timestamp: Date.now() };
+    return { messages: [...s.messages, newMsg], streamingMessageId: newMsg.id };
   }),
+  appendMessageChunk: (role, chunk) => set((s) => {
+    if (!s.streamingMessageId) {
+      // No active streaming message, create a new one
+      const newMsg = { id: generateId(), role, content: chunk, timestamp: Date.now() };
+      return { messages: [...s.messages, newMsg], streamingMessageId: newMsg.id };
+    }
+    // Append to the streaming message
+    const updatedMessages = s.messages.map(m => 
+      m.id === s.streamingMessageId ? { ...m, content: m.content + chunk } : m
+    );
+    return { messages: updatedMessages };
+  }),
+  endStreaming: () => set({ streamingMessageId: null }),
   setFsmState:     (fsmState)  => set({ fsmState }),
   setSessionMeta:  (meta)      => set((s) => ({ sessionMeta: { ...s.sessionMeta, ...meta } })),
   setIsTyping:     (isTyping)  => set({ isTyping }),
   setEmergencyClosed: (v)      => set({ emergencyClosed: v }),
-  clearMessages:   ()          => set({ messages: [], fsmState: { current: 'NAME_ENTRY' }, sessionMeta: {} }),
+  clearMessages:   ()          => set({ messages: [], fsmState: { current: 'NAME_ENTRY' }, sessionMeta: {}, streamingMessageId: null }),
   replaceMessages: (items)     => set(() => {
     const mapped: Message[] = [];
     for (const item of items) {

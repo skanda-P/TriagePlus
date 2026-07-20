@@ -1,10 +1,11 @@
 import asyncio
 import json
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from ..core.triage_graph import graph_builder
+import logging
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from ..intake_fsm import complete_intake, get_session_state
 from ..db.supabase_client import get_supabase
-from datetime import datetime
+from ..core.triage_graph import build_graph
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 router = APIRouter()
 
@@ -13,8 +14,17 @@ _diagnostic_clients = []
 
 
 @router.websocket("/api/v1/ws/diagnostics")
-async def diagnostics_websocket(websocket: WebSocket):
+async def diagnostics_websocket(
+    websocket: WebSocket,
+    token: str = Query(..., description="Developer password for diagnostics access")
+):
     """WebSocket endpoint for diagnostic dashboard to receive real-time graph updates."""
+    # Verify token before accepting
+    dev_password = os.getenv("DEVELOPER_PASSWORD", "devpass")
+    if token != dev_password:
+        await websocket.close(code=1008, reason="Invalid token")
+        return
+        
     await websocket.accept()
     
     # Add to diagnostic clients list
@@ -30,7 +40,6 @@ async def diagnostics_websocket(websocket: WebSocket):
         while True:
             try:
                 data = await websocket.receive_text()
-                # Handle pong or other messages if needed
                 payload = json.loads(data)
                 if payload.get("type") == "ping":
                     await websocket.send_text(json.dumps({"type": "pong"}))
@@ -58,17 +67,19 @@ async def ping_task(websocket: WebSocket):
     except Exception:
         pass
 
+
 async def _process_graph_event(websocket: WebSocket, event: dict, msg: str):
     """Process a single graph event and send appropriate responses to the client"""
-    # Broadcast to diagnostics
-    for diag_ws in _diagnostic_clients:
+    # Broadcast to diagnostics - iterate over a copy to avoid mutation during iteration
+    diagnostic_clients_copy = list(_diagnostic_clients)
+    for diag_ws in diagnostic_clients_copy:
         try:
             await diag_ws.send_text(json.dumps({
                 "type": "diagnostic_update",
                 "node": list(event.keys())[0] if event else "unknown",
                 "state": event[list(event.keys())[0]] if event else {}
             }))
-        except:
+        except Exception:
             pass
                 
     for node_name, node_state in event.items():
@@ -103,7 +114,7 @@ async def _process_graph_event(websocket: WebSocket, event: dict, msg: str):
                     "type": "message",
                     "content": last_msg
                 }))
-                        
+                    
         if node_state.get("available_slots"):
             await websocket.send_text(json.dumps({
                 "type": "message",
@@ -114,6 +125,16 @@ async def _process_graph_event(websocket: WebSocket, event: dict, msg: str):
                     "type": "message",
                     "content": f"Slot: {slot.get('start_time', 'TBD')}"
                 }))
+
+
+# Graph reference set by main.py lifespan
+_graph = None
+
+
+def set_graph(graph):
+    global _graph
+    _graph = graph
+
 
 @router.websocket("/api/v1/ws/chat/{session_id}")
 async def chat_websocket(websocket: WebSocket, session_id: str):
@@ -165,15 +186,17 @@ async def chat_websocket(websocket: WebSocket, session_id: str):
                 }
                 
                 try:
-                    async for event in graph_builder.astream(input_state, config=config, stream_mode="updates"):
+                    # Send stream_start BEFORE streaming
+                    await websocket.send_text(json.dumps({"type": "stream_start"}))
+                    
+                    async for event in _graph.astream(input_state, config=config, stream_mode="updates"):
                         await _process_graph_event(websocket, event, msg)
                 except Exception as e:
-                    import logging
                     logging.error(f"Graph streaming error: {e}")
                     await websocket.send_text(json.dumps({"type": "error", "content": f"Processing error: {str(e)}"}))
                 
                 # Mark typing as complete
-                await websocket.send_text(json.dumps({"type": "stream_start"}))
+                await websocket.send_text(json.dumps({"type": "stream_end"}))
                             
     except WebSocketDisconnect:
         pass
@@ -181,7 +204,16 @@ async def chat_websocket(websocket: WebSocket, session_id: str):
         print(f"Chat WS error: {e}")
         try:
             await websocket.send_text(json.dumps({"type": "error", "content": "An error occurred."}))
-        except:
+        except Exception:
             pass
     finally:
         ping.cancel()
+        try:
+            await ping
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+
+
+import os

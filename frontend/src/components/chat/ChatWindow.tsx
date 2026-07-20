@@ -41,7 +41,14 @@ export function ChatWindow({ sessionId }: { sessionId: string }) {
   const isTyping    = useChatStore((s) => s.isTyping);
   const sessionMeta = useChatStore((s) => s.sessionMeta);
   const fsmState    = useChatStore((s) => s.fsmState);
+  const addMessage  = useChatStore((s) => s.addMessage);
+  const startStreaming = useChatStore((s) => s.startStreaming);
+  const appendMessageChunk = useChatStore((s) => s.appendMessageChunk);
+  const endStreaming = useChatStore((s) => s.endStreaming);
   const setIsTyping = useChatStore((s) => s.setIsTyping);
+  const setFsmState = useChatStore((s) => s.setFsmState);
+  const setSessionMeta = useChatStore((s) => s.setSessionMeta);
+  const clearMessages = useChatStore((s) => s.clearMessages);
 
   const { status, send } = useWebSocket(sessionId);
 
@@ -61,19 +68,19 @@ export function ChatWindow({ sessionId }: { sessionId: string }) {
     const handleSendMsg = (e: any) => {
       if (status !== 'open') return;
       const content = e.detail;
-      useChatStore.getState().addMessage({ role: 'patient', content });
+      addMessage({ role: 'patient', content });
       setIsTyping(true);
       send({ type: 'message', content });
     };
     window.addEventListener('send-message', handleSendMsg);
     return () => window.removeEventListener('send-message', handleSendMsg);
-  }, [status, send, setIsTyping]);
+  }, [status, send, addMessage, setIsTyping]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const content = input.trim();
     if (!content || status !== 'open') return;
-    useChatStore.getState().addMessage({ role: 'patient', content });
+    addMessage({ role: 'patient', content });
     setInput('');
     setIsTyping(true);
     send({ type: 'message', content });
@@ -164,7 +171,7 @@ export function ChatWindow({ sessionId }: { sessionId: string }) {
       {/* Input */}
       {!isEmergency && !showIntake && (
         <form id="msg-form" onSubmit={handleSubmit} className="flex items-center gap-2 px-4 py-3 border-t border-frost-gray dark:border-gray-800 bg-white dark:bg-slate-900 transition-colors duration-300">
-          <button type="button" className="btn-secondary w-11 h-11 !p-0 !rounded-full flex-shrink-0" aria-label="Voice input">
+          <button type="button" className="btn-ghost-white w-11 h-11 !p-0 !rounded-full flex-shrink-0 dark:btn-ghost-dark" aria-label="Voice input">
             <Mic className="w-4 h-4 text-ash" />
           </button>
           <input

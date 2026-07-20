@@ -1,4 +1,3 @@
-import { useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { ArrowLeft, LogIn } from 'lucide-react';
 import { useSession } from '../hooks/useSession';

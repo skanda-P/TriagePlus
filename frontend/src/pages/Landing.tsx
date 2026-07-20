@@ -1,4 +1,3 @@
-import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { ArrowRight, Stethoscope, Clock, Shield, Star } from 'lucide-react';
 import { StethoscopeToggle } from '../components/shared/StethoscopeToggle';
@@ -57,7 +56,7 @@ export default function Landing() {
               <div className="mt-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800/30 rounded-lg flex items-start gap-3">
                 <span className="text-red-500 mt-0.5">⚠️</span>
                 <p className="text-sm text-red-700 dark:text-red-400 font-medium">
-                  In case of emergency - directly call &lt;placeholder&gt; number.
+                  In case of emergency, directly call <a href="tel:112" className="underline font-bold">112</a> (India) or your local emergency number.
                 </p>
               </div>
               <p className="mt-5 text-xs" style={{ color: 'var(--color-ash)' }}>🔒 Your data is private and never shared with third parties.</p>

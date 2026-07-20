@@ -17,6 +17,8 @@ export function useWebSocket(sessionId: string) {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
 
+  const startStreaming = useChatStore((s) => s.startStreaming);
+  const endStreaming = useChatStore((s) => s.endStreaming);
   const addMessage = useChatStore((s) => s.addMessage);
   const appendMessageChunk = useChatStore((s) => s.appendMessageChunk);
   const setFsmState = useChatStore((s) => s.setFsmState);
@@ -89,6 +91,9 @@ export function useWebSocket(sessionId: string) {
           setIsTyping(data.content);
         } else if (data.type === 'stream_start') {
           setIsTyping(false);
+          startStreaming('assistant');
+        } else if (data.type === 'stream_end') {
+          endStreaming();
         } else if (data.type === 'stream_chunk') {
           setIsTyping(false);
           appendMessageChunk('assistant', data.content);
@@ -110,7 +115,7 @@ export function useWebSocket(sessionId: string) {
       console.error('[WebSocket] Error:', error);
       ws.close();
     };
-  }, [addMessage, setFsmState, setSessionMeta, setIsTyping, replaceMessages]);
+  }, [addMessage, appendMessageChunk, startStreaming, endStreaming, setFsmState, setSessionMeta, setIsTyping, replaceMessages]);
 
   useEffect(() => {
     mountedRef.current = true;
