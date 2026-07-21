@@ -155,6 +155,9 @@ def build_mapping_from_symptom2disease(evidences: dict) -> dict:
     df = pd.read_csv(SYMPTOM2DISEASE_FILE)
     print(f"Loaded {len(df)} rows from Symptom2Disease.csv")
 
+    if "label" in df.columns and "text" in df.columns:
+        df = df.rename(columns={"label": "Disease", "text": "Symptom"})
+
     # Group symptoms by disease first so we don't loop evidences per row.
     disease_to_symptoms = df.groupby("Disease")["Symptom"].apply(
         lambda xs: [str(x).lower().strip() for x in xs]

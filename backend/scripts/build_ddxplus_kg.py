@@ -244,5 +244,5 @@ class DDXPlusKGBuilder:
 
 
 if __name__ == "__main__":
-    builder = DDXPlusKGBuilder()
+    builder = DDXPlusKGBuilder(data_dir="data")
     builder.build()

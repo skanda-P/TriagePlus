@@ -7,7 +7,7 @@ import xgboost as xgb
 from sklearn.preprocessing import MultiLabelBinarizer, LabelEncoder
 
 # Data paths
-DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/DDXPlus"))
+DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/DDXPlus"))
 TRAIN_CSV = os.path.join(DATA_DIR, "train.csv")
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../model"))
 MANIFEST_PATH = os.path.join(MODEL_DIR, "training_manifest.json")
