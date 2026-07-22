@@ -90,9 +90,10 @@ export function useWebSocket(sessionId: string) {
         } else if (data.type === 'typing') {
           setIsTyping(data.content);
         } else if (data.type === 'stream_start') {
-          setIsTyping(false);
+          setIsTyping(true);
           startStreaming('assistant');
         } else if (data.type === 'stream_end') {
+          setIsTyping(false)
           endStreaming();
         } else if (data.type === 'stream_chunk') {
           setIsTyping(false);

@@ -6,6 +6,7 @@ import os
 from pydantic import BaseModel, Field, field_validator
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Header
 from ..intake_fsm import complete_intake, get_session_state
+from typing import Optional
 
 router = APIRouter()
 
@@ -117,21 +118,28 @@ async def ping_task(websocket: WebSocket):
     except Exception:
         pass
 
-
-# Sentinel message types that should NOT be echoed to the patient UI
-INTERNAL_SENTINELS = {
-    "SLOTS_OFFERED", "PROMPT_BOOKING", "PROMPT_DEPARTMENT", "PROMPT_DEPARTMENT_RETRY",
-    "SYSTEM_FALLBACK", "SLOT_CONFIRMED", "PAYMENT_SUCCESS", "EMERGENCY_TRIGGERED",
-    "DIAGNOSIS_EXPLANATION", "QUESTION",
+# Prefixes whose text after "PREFIX: " is real patient-facing content —
+# the prefix just tags which node emitted it. Strip it, still send it.
+CONTENT_SENTINEL_PREFIXES = {
+    "QUESTION", "DIAGNOSIS_EXPLANATION", "PROMPT_DEPARTMENT",
+    "PROMPT_DEPARTMENT_RETRY", "PROMPT_BOOKING", "PAYMENT_SUCCESS",
 }
 
+# Pure internal markers with no patient-facing payload — always suppressed.
+SILENT_SENTINELS = {"SLOTS_OFFERED", "SYSTEM_FALLBACK", "SLOT_CONFIRMED"}
 
-def _is_sentinel(msg: str) -> bool:
+
+def _visible_content(msg: str) -> Optional[str]:
+    """Text to send to the patient for a graph message, or None to suppress it."""
     if not isinstance(msg, str):
-        return False
-    # Match "SENTINEL: ..." or bare "SENTINEL"
-    return msg.split(":", 1)[0].strip() in INTERNAL_SENTINELS
-
+        return None
+    prefix, sep, rest = msg.partition(":")
+    prefix = prefix.strip()
+    if sep and prefix in CONTENT_SENTINEL_PREFIXES:
+        return rest.strip()
+    if prefix in SILENT_SENTINELS:
+        return None
+    return msg
 
 async def _broadcast_diagnostics(event: dict):
     """Fire-and-forget broadcast to all diagnostic clients with a short timeout."""
@@ -183,14 +191,24 @@ async def _process_graph_event(websocket: WebSocket, event: dict, msg: str):
                 }
             }))
         
+        # if "messages" in node_state and len(node_state["messages"]) > 0:
+        #     # Send latest message, but filter out internal sentinels
+        #     last_msg = node_state["messages"][-1]
+        #     if last_msg != msg and last_msg.strip() and not _is_sentinel(last_msg):
+        #         await websocket.send_text(json.dumps({
+        #             "type": "message",
+        #             "content": last_msg
+        #         }))
+
         if "messages" in node_state and len(node_state["messages"]) > 0:
-            # Send latest message, but filter out internal sentinels
             last_msg = node_state["messages"][-1]
-            if last_msg != msg and last_msg.strip() and not _is_sentinel(last_msg):
-                await websocket.send_text(json.dumps({
-                    "type": "message",
-                    "content": last_msg
-                }))
+            if last_msg != msg:
+                visible = _visible_content(last_msg)
+                if visible:
+                    await websocket.send_text(json.dumps({
+                        "type": "message",
+                        "content": visible
+                    }))
                     
         if node_state.get("available_slots"):
             await websocket.send_text(json.dumps({
