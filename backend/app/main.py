@@ -5,6 +5,9 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from .routers import chat, doctor, public
 from .db.supabase_client import get_supabase
@@ -12,7 +15,7 @@ from .core.unified_retrieval import get_unified_retriever
 from .core.triage_graph import build_graph
 from .core.error_handler import TriagePlusException
 from .core.ner_symptom_extractor import get_biomedical_ner
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -128,7 +131,7 @@ async def lifespan(app: FastAPI):
         logger.warning("Ollama not available - LLM features will use fallback responses")
     
     # Create checkpointer and compile graph - keep connection open for app lifetime
-    with SqliteSaver.from_conn_string("sqlite:///checkpoints.db") as checkpointer:
+    async with AsyncSqliteSaver.from_conn_string("checkpoints.db") as checkpointer:
         _graph = build_graph().compile(checkpointer=checkpointer)
         # Inject graph into chat router
         chat.set_graph(_graph)

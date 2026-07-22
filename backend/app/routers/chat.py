@@ -19,7 +19,7 @@ class IntakeFormPayload(BaseModel):
     type: str = "intake_form"
     name: str = Field(..., min_length=1, max_length=100)
     age: int = Field(..., ge=0, le=120)
-    gender: str = Field(..., pattern="^(male|female|other)$")
+    gender: str = Field(..., pattern="^(M|F|other)$")
     contact: str = Field(..., min_length=5, max_length=50)
     
     @field_validator("contact")
