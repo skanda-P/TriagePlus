@@ -486,7 +486,27 @@ def node_next_question(state: TriageState) -> TriageState:
     symptom_phrase = evid.get("question_en") or evid.get("name") or next_symptom_id
 
     retriever = get_unified_retriever()
-    present_symptoms_text = " ".join(state.get("present_symptoms") or [])
+    # Render confirmed present-symptom *codes* into human-readable text via the
+    # KG (previously we joined the bare E_XX codes, which told the LLM nothing
+    # useful about what the patient has already reported). This gives the LLM
+    # the context it needs to phrase a non-redundant follow-up.
+    present_human_readable: List[str] = []
+    for ev_code in (state.get("present_symptoms") or []):
+        ev_info = kg.get_evidence_info(_base_evidence(ev_code)) or {}
+        text = ev_info.get("question_en") or ev_info.get("name")
+        if text:
+            present_human_readable.append(text)
+    present_symptoms_text = "; ".join(present_human_readable) if present_human_readable else "none reported"
+
+    # Find the user's most recent actual message so the LLM can briefly
+    # acknowledge it (proposal #3 spirit, but in the right node). We skip
+    # internal sentinel stage markers — those are stage signals, not patient
+    # replies.
+    last_user_msg = ""
+    for msg in reversed(state.get("messages") or []):
+        if isinstance(msg, str) and not _is_sentinel_message(msg):
+            last_user_msg = msg.strip()
+            break
 
     # Query Conversations with the symptom phrase (NL), NOT the bare code.
     few_shot_examples: List[str] = []
@@ -507,14 +527,23 @@ def node_next_question(state: TriageState) -> TriageState:
     state["rag_few_shot"] = few_shot_examples
 
     system_prompt = (
-        "You are a friendly, professional AI medical assistant. "
-        "Ask the user if they are experiencing a specific symptom. Keep it brief and conversational (1-2 sentences). "
-        "Do not give medical advice. Just ask the question. "
-        "Use the examples below as reference for how similar questions are phrased by medical professionals, "
+        "You are a friendly, professional AI medical assistant conducting a brief symptom triage interview. "
+        "You will be given the symptom the patient has ALREADY confirmed having, plus the next symptom you should ask about. "
+        "Reply in 1-3 short sentences. "
+        "First, briefly acknowledge the patient's last message in a natural, empathetic way (one short clause, do not restate it verbatim). "
+        "Then ask about the new symptom. "
+        "Do not give medical advice, diagnosis, or reassurance beyond a brief acknowledgment. "
+        "Do not repeat a symptom the patient has already reported. "
+        "Use the examples below as reference for how medical professionals ask similar questions, "
         "but do NOT copy them directly - generate your own natural question based on the pattern."
     )
 
-    user_prompt = f"The symptom to ask about is: {symptom_phrase}."
+    user_prompt = (
+        f"The patient has already reported these symptoms: {present_symptoms_text}.\n"
+        f"The next symptom to ask about is: {symptom_phrase}."
+    )
+    if last_user_msg:
+        user_prompt += f"\nThe patient's most recent message was: \"{last_user_msg}\""
 
     if few_shot_examples:
         user_prompt += "\n\nHere are examples of how medical professionals ask similar questions:\n"

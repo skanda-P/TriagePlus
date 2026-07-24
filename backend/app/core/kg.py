@@ -97,6 +97,45 @@ def _base_evidence(evid: str) -> str:
     return evid.split("_@_")[0] if "_@_" in evid else evid
 
 
+# Tokens that carry no discriminative meaning for the semantic-duplicate
+# filter below; comparing these across two evidences tells us nothing about
+# whether they're really the same question.
+_NON_DISCRIMINATIVE_TOKENS = {
+    "a", "an", "the", "you", "your", "do", "does", "did", "have", "has",
+    "had", "is", "are", "was", "were", "of", "to", "in", "on", "and", "or",
+    "with", "for", "any", "been", "recently", "lately", "currently", "now",
+    "i", "me", "my", "there", "here", "what", "which", "be", "feel", "feeling",
+}
+
+
+def _evidence_question_tokens(ev_info: Dict) -> Set[str]:
+    """Return the discriminative token set for an evidence's `question_en`.
+
+    Lowercased, alnum-only, with stop/question boilerplate removed. Used by
+    the semantic-duplicate filter in `rank_next_questions` so that near-
+    identical questions (e.g. "Do you have chest pain?" vs "Do you have pain
+    in your chest?") are detected as duplicates instead of relying on the
+    LLM to self-censor.
+    """
+    text = (ev_info.get("question_en") or ev_info.get("name") or "").lower()
+    tokens = set()
+    for tok in text.split():
+        # Strip punctuation so "pain?" and "pain" match.
+        cleaned = "".join(ch for ch in tok if ch.isalnum())
+        if cleaned and cleaned not in _NON_DISCRIMINATIVE_TOKENS and len(cleaned) > 1:
+            tokens.add(cleaned)
+    return tokens
+
+
+def _jaccard(a: Set[str], b: Set[str]) -> float:
+    """Jaccard similarity over two token sets; 0 if either is empty."""
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    union = len(a | b)
+    return inter / union if union else 0.0
+
+
 class KnowledgeGraph:
     def __init__(self):
         self.graph = nx.DiGraph()
@@ -262,6 +301,21 @@ class KnowledgeGraph:
         asked_set = set(_base_evidence(e) for e in asked_symptoms)
         absent_set = set(_base_evidence(e) for e in absent_symptoms)
 
+        # Pre-compute the discriminative-token sets for every evidence we've
+        # already surfaced (present / asked / absent). Candidates whose
+        # `question_en` is highly similar to any of these are dropped below so
+        # the Q-loop doesn't ask "Do you have chest pain?" right after "Do you
+        # have pain in your chest?" — the KG layer suppresses near-duplicates
+        # rather than relying on the LLM to self-censor. (see GH issue: semantic
+        # duplicate next-questions.)
+        already_covered_tokens: List[Set[str]] = []
+        for evid in present_set | asked_set | absent_set:
+            info = self.evidences.get(evid)
+            if info:
+                toks = _evidence_question_tokens(info)
+                if toks:
+                    already_covered_tokens.append(toks)
+
         # Find conditions compatible with the *positive* evidences observed.
         if present_set:
             compatible: Set[str] = set()
@@ -293,6 +347,31 @@ class KnowledgeGraph:
                     and evidence_id not in absent_set
                 ):
                     candidate_evidences.add(evidence_id)
+
+        # Semantic-duplicate suppression: drop candidates whose `question_en`
+        # is highly similar (Jaccard >= SEMANTIC_DUP_THRESHOLD) to any evidence
+        # already surfaced. This is the KG-layer fix for the "asks the same
+        # question twice" problem — correlated evidence codes that rephrase the
+        # same symptom are grouped here instead of being surfaced one after the
+        # other. The threshold is intentionally lenient: exact code equality was
+        # already filtered by the set checks above, so this only catches genuine
+        # paraphrases.
+        SEMANTIC_DUP_THRESHOLD = 0.6
+        if already_covered_tokens and candidate_evidences:
+            survivor: Set[str] = set()
+            for evidence_id in candidate_evidences:
+                cand_tokens = _evidence_question_tokens(self.evidences.get(evidence_id, {}))
+                if not cand_tokens:
+                    survivor.add(evidence_id)
+                    continue
+                is_dup = False
+                for ref_tokens in already_covered_tokens:
+                    if _jaccard(cand_tokens, ref_tokens) >= SEMANTIC_DUP_THRESHOLD:
+                        is_dup = True
+                        break
+                if not is_dup:
+                    survivor.add(evidence_id)
+            candidate_evidences = survivor
 
         # Score each candidate by expected posterior entropy.
         # We need P(E=present | C=c) and P(E=absent | C=c) for each compatible
